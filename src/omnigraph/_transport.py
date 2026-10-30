@@ -6,8 +6,9 @@ retried and no redirect is followed.
 
 from __future__ import annotations
 
+import contextlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 from urllib.parse import quote
 
@@ -111,6 +112,8 @@ class Transport:
         path: str,
         *,
         body: Any = None,
+        content: bytes | None = None,
+        content_type: str | None = None,
         query: Query | None = None,
         headers: Mapping[str, str] | None = None,
         if_actor: str | None = None,
@@ -122,6 +125,8 @@ class Transport:
             method,
             path,
             body=body,
+            content=content,
+            content_type=content_type,
             query=query,
             headers=headers,
             if_actor=if_actor,
@@ -149,11 +154,50 @@ class Transport:
         path: str,
         *,
         body: Any = None,
+        content: bytes | None = None,
+        content_type: str | None = None,
         query: Query | None = None,
         headers: Mapping[str, str] | None = None,
         if_actor: str | None = None,
         accepted_statuses: Sequence[int] = (),
     ) -> httpx.Response:
+        """Send one request and read its whole body."""
+        async with self.stream(
+            method,
+            path,
+            body=body,
+            content=content,
+            content_type=content_type,
+            query=query,
+            headers=headers,
+            if_actor=if_actor,
+            accepted_statuses=accepted_statuses,
+        ) as response:
+            try:
+                await response.aread()
+            except httpx.TransportError as e:
+                raise self._transport_error(method, path, e) from e
+            return response
+
+    @contextlib.asynccontextmanager
+    async def stream(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: Any = None,
+        content: bytes | None = None,
+        content_type: str | None = None,
+        query: Query | None = None,
+        headers: Mapping[str, str] | None = None,
+        if_actor: str | None = None,
+        accepted_statuses: Sequence[int] = (),
+    ) -> AsyncIterator[httpx.Response]:
+        """Send one request and yield the response with its body unread, once
+        its status and contract header passed. Closing the context closes the
+        connection, which cancels an unfinished download."""
+        if body is not None and content is not None:
+            raise ValueError("body and content are mutually exclusive")
         if self.graph_id is None and not _is_root(path):
             raise ConfigurationError(
                 f"graph_id is required for graph-scoped operations (attempted "
@@ -173,16 +217,18 @@ class Transport:
             if self._token:
                 sent["Authorization"] = f"Bearer {self._token}"
         sent.setdefault("Accept", "application/json, application/x-ndjson")
-        content: bytes | None = None
         if body is not None:
             content = json.dumps(body).encode()
-            sent.setdefault("Content-Type", "application/json")
+            content_type = content_type or "application/json"
+        if content_type is not None:
+            sent["Content-Type"] = content_type
         params = {k: v for k, v in (query or {}).items() if v is not None}
         writes = may_write(method, path)
+        request = self._client.build_request(
+            method, url, content=content, headers=sent, params=params
+        )
         try:
-            response = await self._client.request(
-                method, url, content=content, headers=sent, params=params
-            )
+            response = await self._client.send(request, stream=True)
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             raise NetworkError(
                 f"could not connect to the server: {e}",
@@ -190,38 +236,53 @@ class Transport:
                 url=url,
             ) from e
         except httpx.TransportError as e:
-            raise NetworkError(
-                "HTTP transport failed after dispatch; reconcile writes before retrying",
-                method=method,
-                url=url,
-                request_dispatched=True,
-                outcome_unknown=writes,
-            ) from e
-        if not path.startswith(_OAUTH_PREFIX) and response.headers.get_list(
-            HTTP_API_CONTRACT_HEADER
-        ) != [HTTP_API_CONTRACT]:
-            raise ApiContractError(
-                f"response must carry exactly one {HTTP_API_CONTRACT_HEADER}: "
-                f"{HTTP_API_CONTRACT}; reconcile writes before retrying",
-                status=response.status_code,
-                method=method,
-                url=url,
-                code="api_contract_mismatch",
-                response=response,
-                request_dispatched=True,
-                outcome_unknown=writes,
-            )
-        if not response.is_success and response.status_code not in accepted_statuses:
-            try:
-                parsed: Any = json.loads(response.content)
-            except ValueError:
-                # A status alone does not prove a write failed when its
-                # response is truncated or malformed.
-                parsed = None
-            raise from_response(
-                response, error_body(parsed), method=method, url=url, may_write=writes
-            )
-        return response
+            raise self._transport_error(method, path, e) from e
+        try:
+            if not path.startswith(_OAUTH_PREFIX) and response.headers.get_list(
+                HTTP_API_CONTRACT_HEADER
+            ) != [HTTP_API_CONTRACT]:
+                raise ApiContractError(
+                    f"response must carry exactly one {HTTP_API_CONTRACT_HEADER}: "
+                    f"{HTTP_API_CONTRACT}; reconcile writes before retrying",
+                    status=response.status_code,
+                    method=method,
+                    url=url,
+                    code="api_contract_mismatch",
+                    response=response,
+                    request_dispatched=True,
+                    outcome_unknown=writes,
+                )
+            if (
+                not response.is_success
+                and response.status_code not in accepted_statuses
+            ):
+                try:
+                    parsed: Any = json.loads(await response.aread())
+                except (ValueError, httpx.TransportError):
+                    # A status alone does not prove a write failed when its
+                    # response is truncated or malformed.
+                    parsed = None
+                raise from_response(
+                    response,
+                    error_body(parsed),
+                    method=method,
+                    url=url,
+                    may_write=writes,
+                )
+            yield response
+        finally:
+            await response.aclose()
+
+    def _transport_error(
+        self, method: str, path: str, error: httpx.TransportError
+    ) -> NetworkError:
+        return NetworkError(
+            "HTTP transport failed after dispatch; reconcile writes before retrying",
+            method=method,
+            url=self.url(path),
+            request_dispatched=True,
+            outcome_unknown=may_write(method, path),
+        )
 
     def invalid_response(
         self, method: str, path: str, message: str, status: int = 200

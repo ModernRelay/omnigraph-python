@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import types
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, Self, cast
 
 import httpx
@@ -10,13 +11,27 @@ import httpx
 from ._models import (
     AccessOutput,
     ChangeOutput,
+    DiffOutput,
+    GraphBatchLoadOutput,
     HealthOutput,
+    IngestOutput,
+    LoadMode,
     ReadinessOutput,
     ReadOutput,
     SnapshotOutput,
 )
 from ._receipts import valid_mutation_receipt
-from ._resources import Branches, Cluster, Commits, Graphs, Schema
+from ._resources import (
+    Blobs,
+    Branches,
+    Changes,
+    Cluster,
+    Commits,
+    Graphs,
+    Queries,
+    Schema,
+    _ndjson,
+)
 from ._transport import Transport
 
 
@@ -80,6 +95,9 @@ class Omnigraph:
         self.schema = Schema(transport)
         self.graphs = Graphs(transport)
         self.cluster = Cluster(transport)
+        self.queries = Queries(transport)
+        self.changes = Changes(transport)
+        self.blobs = Blobs(transport)
 
     @property
     def base_url(self) -> str:
@@ -211,4 +229,99 @@ class Omnigraph:
             await self._t.request(
                 "GET", "/snapshot", query={"branch": branch}, if_actor=if_actor
             ),
+        )
+
+    async def diff(
+        self,
+        from_: str,
+        to: str,
+        *,
+        page_token: str | None = None,
+        limit: int | None = None,
+        kind: Sequence[str] | None = None,
+        type: Sequence[str] | None = None,
+        op: Sequence[str] | None = None,
+        if_actor: str | None = None,
+    ) -> DiffOutput:
+        """One page of net entity changes between two branches or commits."""
+        return cast(
+            DiffOutput,
+            await self._t.request(
+                "GET",
+                "/diff",
+                query={
+                    "from": from_,
+                    "to": to,
+                    "page_token": page_token,
+                    "limit": None if limit is None else str(limit),
+                    "kind": kind,
+                    "type": type,
+                    "op": op,
+                },
+                if_actor=if_actor,
+            ),
+        )
+
+    async def export(
+        self,
+        *,
+        branch: str | None = None,
+        type_names: Sequence[str] | None = None,
+        if_actor: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream a branch's nodes and edges as NDJSON records, without
+        buffering them. Breaking out of the loop cancels the download."""
+        body: dict[str, Any] = {}
+        if branch is not None:
+            body["branch"] = branch
+        if type_names is not None:
+            body["type_names"] = list(type_names)
+        async with self._t.stream(
+            "POST", "/export", body=body, if_actor=if_actor
+        ) as response:
+            async for record in _ndjson(response):
+                yield record
+
+    async def load_ndjson(
+        self,
+        ndjson: str | bytes,
+        *,
+        branch: str | None = None,
+        from_: str | None = None,
+        mode: LoadMode | None = None,
+        if_actor: str | None = None,
+    ) -> GraphBatchLoadOutput:
+        """Load one bounded NDJSON batch as one graph commit. Without `from_`
+        the branch must exist. `merge` upserts by key; it is not request
+        deduplication, so reconcile an ambiguous outcome before retrying."""
+        data = ndjson.encode() if isinstance(ndjson, str) else ndjson
+        return cast(
+            GraphBatchLoadOutput,
+            await self._t.request(
+                "POST",
+                "/load/ndjson",
+                content=data,
+                content_type="application/x-ndjson",
+                query={"branch": branch, "from": from_, "mode": mode},
+                if_actor=if_actor,
+            ),
+        )
+
+    async def load(
+        self,
+        data: str,
+        *,
+        branch: str | None = None,
+        from_: str | None = None,
+        mode: LoadMode | None = None,
+        if_actor: str | None = None,
+    ) -> IngestOutput:
+        """The compatibility JSON load (`POST /load`); prefer `load_ndjson`."""
+        body: dict[str, Any] = {"data": data}
+        for key, value in (("branch", branch), ("from", from_), ("mode", mode)):
+            if value is not None:
+                body[key] = value
+        return cast(
+            IngestOutput,
+            await self._t.request("POST", "/load", body=body, if_actor=if_actor),
         )

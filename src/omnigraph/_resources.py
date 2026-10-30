@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import builtins
+import json
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, cast
 from urllib.parse import quote
 
+import httpx
+
 from ._models import (
+    BlobWriteOutput,
     BranchCreateOutput,
     BranchDeleteOutput,
     BranchMergeOutput,
+    ChangeFeedOutput,
+    ChangeOutput,
     CommitChangesOutput,
     CommitListing,
     CommitListOutput,
@@ -20,6 +27,8 @@ from ._models import (
     GraphDiscoveryEntry,
     GraphInfo,
     MergeBaseOutput,
+    QueriesCatalogOutput,
+    ReadOutput,
     SchemaOutput,
 )
 from ._receipts import valid_merge
@@ -321,4 +330,275 @@ class Cluster:
             await self._t.request(
                 "GET", f"/cluster/deployments/{_seg(deployment_id)}", if_actor=if_actor
             ),
+        )
+
+
+async def _ndjson(response: httpx.Response) -> AsyncIterator[Any]:
+    """Parse an NDJSON body line by line as it arrives."""
+    async for line in response.aiter_lines():
+        if line.strip():
+            yield json.loads(line)
+
+
+class Queries:
+    """The graph's server-side stored queries (its `queries:` registry)."""
+
+    def __init__(self, transport: Transport) -> None:
+        self._t = transport
+
+    async def list(self, *, if_actor: str | None = None) -> QueriesCatalogOutput:
+        """Every stored query with its typed parameters."""
+        return cast(
+            QueriesCatalogOutput,
+            await self._t.request("GET", "/queries", if_actor=if_actor),
+        )
+
+    async def invoke(
+        self,
+        name: str,
+        *,
+        params: dict[str, Any] | None = None,
+        branch: str | None = None,
+        snapshot: str | None = None,
+        expect_mutation: bool | None = None,
+        if_graph_commit: str | None = None,
+        if_actor: str | None = None,
+    ) -> ReadOutput | ChangeOutput:
+        """Invoke a stored query by name. An unknown name and one the caller may
+        not invoke both raise `NotFoundError`. `expect_mutation` asserts the
+        stored query's kind; `if_graph_commit` selects the conditional route."""
+        body: dict[str, Any] = {}
+        for key, value in (
+            ("params", params),
+            ("branch", branch),
+            ("snapshot", snapshot),
+            ("expect_mutation", expect_mutation),
+        ):
+            if value is not None:
+                body[key] = value
+        path = f"/queries/{_seg(name)}"
+        headers = None
+        if if_graph_commit is not None:
+            path += "/if-graph-commit"
+            headers = {"Omnigraph-If-Graph-Commit": if_graph_commit}
+        return cast(
+            "ReadOutput | ChangeOutput",
+            await self._t.request(
+                "POST", path, body=body, headers=headers, if_actor=if_actor
+            ),
+        )
+
+
+class Changes:
+    """The change feed of a branch."""
+
+    def __init__(self, transport: Transport) -> None:
+        self._t = transport
+
+    async def poll(
+        self,
+        *,
+        branch: str | None = None,
+        cursor: str | None = None,
+        start: str | None = None,
+        page_token: str | None = None,
+        limit: int | None = None,
+        kind: Sequence[str] | None = None,
+        type: Sequence[str] | None = None,
+        op: Sequence[str] | None = None,
+        if_actor: str | None = None,
+    ) -> ChangeFeedOutput:
+        """One bounded feed page. Follow `next_page_token` within the poll and
+        persist `cursor` only from its terminal page. A `GoneError` means the
+        history is no longer retained: take a new baseline."""
+        return cast(
+            ChangeFeedOutput,
+            await self._t.request(
+                "GET",
+                "/changes",
+                query={
+                    "branch": branch,
+                    "cursor": cursor,
+                    "start": start,
+                    "page_token": page_token,
+                    "limit": _str(limit),
+                    "kind": kind,
+                    "type": type,
+                    "op": op,
+                },
+                if_actor=if_actor,
+            ),
+        )
+
+    async def baseline(
+        self,
+        *,
+        branch: str | None = None,
+        kind: Sequence[str] | None = None,
+        type: Sequence[str] | None = None,
+        op: Sequence[str] | None = None,
+        if_actor: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream a pinned snapshot of entities, then one final `{"baseline":
+        ...}` record carrying the cursor that resumes the feed. The terminal
+        record is yielded only after the stream ended completely."""
+        body: dict[str, Any] = {}
+        for key, value in (
+            ("branch", branch),
+            ("kind", kind),
+            ("type", type),
+            ("op", op),
+        ):
+            if value is not None:
+                body[key] = list(value) if not isinstance(value, str) else value
+        async with self._t.stream(
+            "POST", "/changes/baseline", body=body, if_actor=if_actor
+        ) as response:
+            terminal: dict[str, Any] | None = None
+            async for record in _ndjson(response):
+                if terminal is not None:
+                    raise ValueError(
+                        "change baseline has records after its terminal record"
+                    )
+                if isinstance(record, dict) and "baseline" in record:
+                    inner = record["baseline"]
+                    if not (
+                        isinstance(inner, dict)
+                        and isinstance(inner.get("snapshot_commit_id"), str)
+                        and isinstance(inner.get("resume_cursor"), str)
+                    ):
+                        raise ValueError(
+                            "change baseline has an invalid terminal record"
+                        )
+                    terminal = record
+                else:
+                    yield record
+            if terminal is None:
+                raise ValueError("change baseline ended without a terminal record")
+            yield terminal
+
+
+class Blobs:
+    """Blob cell reads and atomic writes, addressed by logical identity."""
+
+    def __init__(self, transport: Transport) -> None:
+        self._t = transport
+
+    @staticmethod
+    def _selector(
+        entity: str, type: str, id: str, property: str, branch: str | None
+    ) -> dict[str, str | None]:
+        return {
+            "entity": entity,
+            "type": type,
+            "id": id,
+            "property": property,
+            "branch": branch,
+        }
+
+    async def put(
+        self,
+        data: bytes,
+        *,
+        entity: str,
+        type: str,
+        id: str,
+        property: str,
+        branch: str | None = None,
+        if_match: str | None = None,
+        if_actor: str | None = None,
+    ) -> BlobWriteOutput:
+        """Replace one Blob value (at most 32 MiB) as one graph commit."""
+        return cast(
+            BlobWriteOutput,
+            await self._t.request(
+                "PUT",
+                "/blob",
+                content=data,
+                content_type="application/octet-stream",
+                query=self._selector(entity, type, id, property, branch),
+                headers={"If-Match": if_match} if if_match is not None else None,
+                if_actor=if_actor,
+            ),
+        )
+
+    async def clear(
+        self,
+        *,
+        entity: str,
+        type: str,
+        id: str,
+        property: str,
+        branch: str | None = None,
+        if_match: str | None = None,
+        if_actor: str | None = None,
+    ) -> BlobWriteOutput:
+        """Set a nullable Blob value to null; an existing null answers `commit: None`."""
+        return cast(
+            BlobWriteOutput,
+            await self._t.request(
+                "DELETE",
+                "/blob",
+                query=self._selector(entity, type, id, property, branch),
+                headers={"If-Match": if_match} if if_match is not None else None,
+                if_actor=if_actor,
+            ),
+        )
+
+    async def get(
+        self,
+        *,
+        entity: str,
+        type: str,
+        id: str,
+        property: str,
+        branch: str | None = None,
+        snapshot: str | None = None,
+        if_none_match: str | None = None,
+        range: str | None = None,
+        if_actor: str | None = None,
+    ) -> httpx.Response:
+        """The managed bytes (200/206), an external `Location` (302, never
+        followed), or not-modified (304). Inspect `status_code` first."""
+        query = self._selector(entity, type, id, property, branch)
+        query["snapshot"] = snapshot
+        headers = {"Accept": "application/octet-stream"}
+        if if_none_match is not None:
+            headers["If-None-Match"] = if_none_match
+        if range is not None:
+            headers["Range"] = range
+        return await self._t.send(
+            "GET",
+            "/blob",
+            query=query,
+            headers=headers,
+            accepted_statuses=(302, 304),
+            if_actor=if_actor,
+        )
+
+    async def stat(
+        self,
+        *,
+        entity: str,
+        type: str,
+        id: str,
+        property: str,
+        branch: str | None = None,
+        snapshot: str | None = None,
+        if_none_match: str | None = None,
+        if_actor: str | None = None,
+    ) -> httpx.Response:
+        """HEAD metadata without the bytes; 302 and 304 as for `get`."""
+        query = self._selector(entity, type, id, property, branch)
+        query["snapshot"] = snapshot
+        headers = {"Accept": "application/octet-stream"}
+        if if_none_match is not None:
+            headers["If-None-Match"] = if_none_match
+        return await self._t.send(
+            "HEAD",
+            "/blob",
+            query=query,
+            headers=headers,
+            accepted_statuses=(302, 304),
+            if_actor=if_actor,
         )

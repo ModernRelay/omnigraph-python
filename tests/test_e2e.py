@@ -46,6 +46,11 @@ node Company {
   name: String @key
 }
 
+node Doc {
+  slug: String @key
+  body: Blob?
+}
+
 edge WorksAt: Person -> Company {
   role: String?
 }
@@ -58,7 +63,7 @@ rules:
   - id: rw
     allow:
       actors: {{ group: sdk }}
-      actions: [read, change]
+      actions: [read, change, export]
       branch_scope: any
   - id: branches
     allow:
@@ -251,3 +256,50 @@ async def test_unknown_graph_and_bad_token(server: Server, og: Omnigraph) -> Non
     async with Omnigraph(server.base_url, graph_id="g", token="wrong") as bad:
         with pytest.raises(UnauthorizedError):
             await bad.schema.get()
+
+
+async def test_export_streams_ndjson(og: Omnigraph) -> None:
+    await og.mutate(INSERT_PERSON, params={"n": "exported", "c": "Delft"})
+    rows = [r async for r in og.export(type_names=["Person"])]
+    assert any(r.get("data", {}).get("name") == "exported" for r in rows)
+    assert all(r.get("type") == "Person" for r in rows)
+
+
+async def test_load_ndjson_and_diff(og: Omnigraph) -> None:
+    await og.branches.create("sdk_load")
+    out = await og.load_ndjson(
+        '{"type":"Company","data":{"name":"Loaded"}}\n', branch="sdk_load", mode="merge"
+    )
+    assert out
+    diff = await og.diff("main", "sdk_load")
+    assert diff["changes"], diff
+    await og.branches.delete("sdk_load")
+
+
+async def test_stored_query_catalog_and_unknown_name(og: Omnigraph) -> None:
+    catalog = await og.queries.list()
+    assert catalog["queries"] == []
+    with pytest.raises(NotFoundError):
+        await og.queries.invoke("nope")
+
+
+async def test_change_feed_and_baseline(og: Omnigraph) -> None:
+    page = await og.changes.poll(start="beginning", limit=5)
+    assert isinstance(page["blocks"], list)
+    assert page.get("cursor") or page.get("next_page_token")
+    records = [r async for r in og.changes.baseline(type=["Company"])]
+    assert "baseline" in records[-1]
+    assert all("baseline" not in r for r in records[:-1])
+
+
+async def test_blob_put_get_clear(og: Omnigraph) -> None:
+    await og.mutate('query d() { insert Doc { slug: "d1" } }')
+    sel = {"entity": "node", "type": "Doc", "id": "d1", "property": "body"}
+    written = await og.blobs.put(b"hello blob", **sel)
+    assert written["commit"] is not None
+    got = await og.blobs.get(**sel)
+    assert got.status_code == 200 and got.content == b"hello blob"
+    head = await og.blobs.stat(**sel)
+    assert head.status_code == 200 and head.headers.get("ETag")
+    cleared = await og.blobs.clear(**sel)
+    assert cleared["commit"] is not None
