@@ -56,6 +56,22 @@ merged = await og.branches.merge("review", delete_branch=True)
 Merge and mutation receipts are validated; a receipt that does not name the requested
 operation raises `ApiContractError`.
 
+## Streams, loads, feeds, and blobs
+
+```python
+async for row in og.export(type_names=["Person"]):      # NDJSON, not buffered
+    ...
+await og.load_ndjson(ndjson_text, branch="main", mode="merge")   # one commit, up to 32 MiB
+page = await og.changes.poll(start="beginning", limit=100)        # one bounded feed page
+async for record in og.changes.baseline():                       # snapshot, then {"baseline": ...}
+    ...
+await og.blobs.put(b"...", entity="node", type="Doc", id="d1", property="body")
+await og.queries.invoke("people", params={"name": "Ada"})
+```
+
+Ordinary JSON requests are limited to 1 MiB by the server; bulk loads go through
+`load_ndjson`.
+
 ## Errors
 
 Every error is an `OmnigraphError` subclass chosen by status and `code` (`ConflictError`,
