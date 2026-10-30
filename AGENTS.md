@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Python SDK for the OmniGraph HTTP API. Reference implementation: `ModernRelay/omnigraph-ts`
+Python SDK for the Omnigraph HTTP API. Reference implementation: `ModernRelay/omnigraph-ts`
 (`packages/sdk`), pinned to the same server release. Match its behaviour (contract header,
 discovery, no retries, no redirects, receipt validation, error classes); use Python idioms
 for names and shapes.

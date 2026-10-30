@@ -1,7 +1,7 @@
 [project]
 name = "omnigraph"
 version = "0.14.0a1"
-description = "Python client for the OmniGraph HTTP API"
+description = "Python client for the Omnigraph HTTP API"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

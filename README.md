@@ -1,6 +1,6 @@
 # omnigraph
 
-Async Python client for the [OmniGraph](https://github.com/ModernRelay/omnigraph) HTTP API,
+Async Python client for the [Omnigraph](https://github.com/ModernRelay/omnigraph) HTTP API,
 contract **0.14**. It mirrors the TypeScript SDK
 [`@modernrelay/omnigraph`](https://github.com/ModernRelay/omnigraph-ts): the same routes, the
 same contract checks, and the same error model, with Python names.

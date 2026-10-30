@@ -1,4 +1,4 @@
-"""Python client for the OmniGraph HTTP API (contract 0.14)."""
+"""Python client for the Omnigraph HTTP API (contract 0.14)."""
 
 from ._client import Omnigraph
 from ._errors import (
