@@ -15,7 +15,7 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/pronskiy/omnigraph-python"
+Homepage = "https://github.com/ModernRelay/omnigraph-python"
 Issues = "https://github.com/ModernRelay/omnigraph/issues"
 
 [tool.omnigraph]
