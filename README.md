@@ -59,11 +59,15 @@ operation raises `ApiContractError`.
 ## Streams, loads, feeds, and blobs
 
 ```python
-async for row in og.export(type_names=["Person"]):      # NDJSON, not buffered
+# NDJSON, not buffered
+async for row in og.export(type_names=["Person"]):
     ...
-await og.load_ndjson(ndjson_text, branch="main", mode="merge")   # one commit, up to 32 MiB
-page = await og.changes.poll(start="beginning", limit=100)        # one bounded feed page
-async for record in og.changes.baseline():                       # snapshot, then {"baseline": ...}
+# One commit, up to 32 MiB
+await og.load_ndjson(ndjson_text, branch="main", mode="merge")
+# One bounded feed page
+page = await og.changes.poll(start="beginning", limit=100)
+# A snapshot, then {"baseline": ...}
+async for record in og.changes.baseline():
     ...
 await og.blobs.put(b"...", entity="node", type="Doc", id="d1", property="body")
 await og.queries.invoke("people", params={"name": "Ada"})
