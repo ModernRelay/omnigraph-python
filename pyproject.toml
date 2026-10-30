@@ -1,0 +1,54 @@
+[project]
+name = "omnigraph"
+version = "0.14.0a1"
+description = "Python client for the OmniGraph HTTP API"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.27,<1"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Programming Language :: Python :: 3",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/pronskiy/omnigraph-python"
+Issues = "https://github.com/ModernRelay/omnigraph/issues"
+
+[tool.omnigraph]
+# The server release this SDK is generated from and tested against. The SDK
+# minor tracks the server minor; `spec/openapi.json` is that release's file.
+server-version = "0.14.0"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "mypy>=1.11",
+    "ruff>=0.6",
+    "datamodel-code-generator==0.34.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/omnigraph"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests", "scripts"]
+
+[tool.ruff]
+line-length = 88
+extend-exclude = ["src/omnigraph/_models.py"]
