@@ -29,8 +29,15 @@ Rows omit null-valued fields.
 
 Every request carries `Omnigraph-Http-Api: 0.14`, every response is checked for it, and a
 `HEAD /healthz` discovery precedes each data request. The client follows no redirects and
-never retries. Upgrade the server and this package together: the SDK minor tracks the server
-minor.
+never retries.
+
+## Versions
+
+The package's major.minor is the HTTP contract it speaks: `omnigraph` 0.14.x talks to
+`omnigraph-server` 0.14.x and refuses any other contract. The patch number is the SDK's own,
+for fixes that change nothing on the wire, so `omnigraph` 0.14.1 does not mean server 0.14.1.
+Upgrade the server and this package together when the minor changes, and pin
+`omnigraph>=0.14,<0.15` to follow SDK fixes for one contract.
 
 ## Write and verify
 

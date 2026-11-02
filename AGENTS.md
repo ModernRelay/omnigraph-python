@@ -8,6 +8,8 @@ for names and shapes.
 - The server version lives in `pyproject.toml` `[tool.omnigraph] server-version`. Bumping it:
   `scripts/sync_spec.py`, then `scripts/generate.py`, then run the e2e suite against that
   release's binaries.
+- Versioning: the package's major.minor equals the server's contract (`generate.py --check`
+  enforces it); bump the patch for an SDK-only fix, the minor only with `server-version`.
 - `src/omnigraph/_models.py` and `_version.py` are generated; never edit them by hand.
   `scripts/generate.py --check` must pass.
 - Public results are the generated `TypedDict`s; do not rename wire fields.
