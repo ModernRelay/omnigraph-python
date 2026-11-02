@@ -621,7 +621,7 @@ wheels = [
 
 [[package]]
 name = "omnigraph"
-version = "0.14.0a1"
+version = "0.14.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
