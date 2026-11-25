@@ -18,6 +18,7 @@ AccessAction = Literal[
     'commit_publish',
     'commit_drop',
     'invoke_query',
+    'maintain',
 ]
 
 
@@ -330,6 +331,7 @@ ErrorCode = Literal[
     'conflict',
     'branch_start_refusal',
     'unattached_cannot_publish',
+    'writer_fenced',
     'payload_too_large',
     'unsupported_media_type',
     'range_not_satisfiable',
@@ -519,6 +521,15 @@ class MergeConflictOutput(TypedDict):
     type_name: str
 
 
+OperationLookup = Literal['found', 'unknown']
+
+
+class OperationOutput(TypedDict):
+    in_progress: bool
+    lookup: OperationLookup
+    operation: NotRequired[dict[str, Any] | None]
+
+
 ParamKind = Literal[
     'string',
     'bool',
@@ -681,6 +692,16 @@ class SnapshotOutput(TypedDict):
     internal_schema_version: int
 
 
+class StartOptimizeRequest(TypedDict):
+    """
+    `POST /graphs/{graph_id}/operations/optimize`.
+    """
+
+    datasets: NotRequired[list[str]]
+    max_gate_hold_ms: NotRequired[int | None]
+    operation_id: str
+
+
 class SystemColumnsOutput(TypedDict):
     """
     A graph's system column spellings (see `SchemaOutput::system_columns`).
@@ -699,6 +720,18 @@ class TextEditOutput(TypedDict):
     end: int
     replacement: str
     start: int
+
+
+class WriterFencedOutput(TypedDict):
+    """
+    The writer epochs of a publish or claim a claimed branch refused. `held`
+    is the serving process's epoch, absent when it holds none; `read` is the
+    epoch a refused claim read; `current` is the branch's epoch.
+    """
+
+    current: int
+    held: NotRequired[int | None]
+    read: NotRequired[int | None]
 
 
 class BlobSelectorOutput(TypedDict):
@@ -1096,6 +1129,7 @@ class ErrorOutput(TypedDict):
     read_set_conflict: NotRequired[ReadSetConflictOutput | None]
     recovery_required: NotRequired[RecoveryRequiredOutput | None]
     resource_limit: NotRequired[ResourceLimitOutput | None]
+    writer_fenced: NotRequired[WriterFencedOutput | None]
 
 
 class LoadExecutedOutput(TypedDict):

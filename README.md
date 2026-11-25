@@ -1,7 +1,7 @@
 # omnigraph
 
 Async Python client for the [Omnigraph](https://github.com/ModernRelay/omnigraph) HTTP API,
-generated from `omnigraph-server` **0.15.0** (HTTP contract **0.14**). It mirrors the TypeScript SDK
+generated from `omnigraph-server` **0.16.0** (HTTP contract **0.14**). It mirrors the TypeScript SDK
 [`@modernrelay/omnigraph`](https://github.com/ModernRelay/omnigraph-ts): the same routes, the
 same contract checks, and the same error model, with Python names.
 
@@ -142,7 +142,7 @@ Bundles are opaque here, as in the TypeScript SDK; for operator work use
 ```sh
 uv sync
 uv run pytest                      # unit tests (mocked transport)
-OMNIGRAPH_TEST_SERVER=1 OMNIGRAPH_BIN_DIR=/path/to/v0.15.0 uv run pytest tests/test_e2e.py
+OMNIGRAPH_TEST_SERVER=1 OMNIGRAPH_BIN_DIR=/path/to/v0.16.0 uv run pytest tests/test_e2e.py
 uv run python scripts/generate.py --check   # generated files match spec/openapi.json
 uv run mypy && uv run ruff check . && uv run ruff format --check .
 ```
