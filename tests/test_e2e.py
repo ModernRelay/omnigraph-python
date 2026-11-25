@@ -419,8 +419,13 @@ async def test_recorded_optimize_submit_wait_lookup_cancel(og: Omnigraph) -> Non
     final = done.get("operation")
     assert final is not None and final["state"] == "succeeded", final
     assert is_terminal(final["state"]) and done["in_progress"] is False
-    for table in final["outcome"].get("datasets", []):
-        assert table["outcome"] in ("optimized", "unchanged", "deferred", "failed")
+    # A full run reports every dataset of the schema, under `datasets`.
+    datasets = final["outcome"].get("datasets")
+    assert datasets, final
+    keys = {d["type_key"] for d in datasets}
+    assert {"node:Person", "node:Company", "edge:WorksAt"} <= keys, keys
+    for dataset in datasets:
+        assert dataset["outcome"] in ("optimized", "unchanged", "deferred", "failed")
 
     # Cancelling a terminal operation leaves it unchanged.
     cancelled = await og.operations.cancel(op_id)
@@ -431,6 +436,56 @@ async def test_recorded_optimize_submit_wait_lookup_cancel(og: Omnigraph) -> Non
     with pytest.raises(ConflictError) as info:
         await og.operations.optimize(op_id, datasets=["node:Person"])
     assert info.value.outcome_unknown is False
+
+
+async def test_a_run_limited_to_one_dataset_reports_exactly_it(og: Omnigraph) -> None:
+    op_id = new_operation_id()
+    await og.operations.optimize(op_id, datasets=["node:Person"])
+    async with asyncio.timeout(120):
+        done = await og.operations.wait(op_id, interval=0.05)
+    op = done.get("operation")
+    assert op is not None and op["request"].get("datasets") == ["node:Person"]
+    assert [d["type_key"] for d in op["outcome"].get("datasets", [])] == ["node:Person"]
+
+
+async def test_cancelling_an_active_run(og: Omnigraph) -> None:
+    # A fixture run takes milliseconds, so cancel concurrently with the
+    # submission: the first cancel that finds the record meets it accepted or
+    # running unless the run already ended. Retry until one meets an active
+    # run, then check the terminal record.
+    for _ in range(50):
+        op_id = new_operation_id()
+        submit = asyncio.create_task(og.operations.optimize(op_id))
+        while True:
+            reply = await og.operations.cancel(op_id)
+            if reply["lookup"] == "found":
+                break
+        await submit
+        cancel = reply.get("operation")
+        assert cancel is not None
+        if is_terminal(cancel["state"]):
+            continue
+        async with asyncio.timeout(120):
+            done = await og.operations.wait(op_id, interval=0.02)
+        op = done.get("operation")
+        assert op is not None
+        if cancel["state"] == "publishing":
+            # No cancellation is requested once publishing; it finishes.
+            assert op["state"] == "succeeded"
+        elif op["state"] == "cancelled":
+            assert "published_commit" not in op
+            assert "cancelled by" in op.get("reason", "")
+        else:
+            # omnigraph 0.16.0 settles a run's cancellation when it builds the
+            # run's report, but keeps the record running until it writes the
+            # terminal record; a cancel in that window is answered 202 and
+            # the run ends succeeded with no reason. A reason, when present,
+            # says the cancellation arrived late.
+            assert op["state"] == "succeeded"
+            reason = op.get("reason")
+            assert reason is None or "a cancellation arrived after" in reason
+        return
+    pytest.fail("no cancel met an active run in 50 attempts")
 
 
 async def test_unknown_operation_lookup(og: Omnigraph) -> None:
