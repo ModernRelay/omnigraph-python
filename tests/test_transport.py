@@ -318,3 +318,79 @@ async def test_branch_list_detailed_without_details_is_a_contract_error() -> Non
         with pytest.raises(ApiContractError) as info:
             await og.branches.list_detailed()
     assert info.value.outcome_unknown is False
+
+
+async def test_ranked_read_reports_its_ranking() -> None:
+    body = {
+        "query_name": "q", "target": {"branch": "main"}, "row_count": 1,
+        "rows": [{"d.slug": "a", "score": 1.5}], "columns": ["d.slug", "score"],
+        "ranking": {"by": "bm25", "order": "descending", "exhaustive": True,
+                    "score_columns": ["score"]},
+    }  # fmt: skip
+    rec = Recorder(lambda r: _json(200, body))
+    async with _client(rec) as og:
+        out = await og.query("query q($t: String) { ... }", params={"t": "x"})
+    ranking = out.get("ranking")
+    assert ranking is not None
+    assert ranking["by"] == "bm25" and ranking["order"] == "descending"
+    assert ranking["score_columns"] == ["score"]
+
+
+async def test_access_reports_the_oauth_client() -> None:
+    body = {"graph_id": "g", "actor_id": "principal:p", "client_id": "studio",
+            "actions": ["read"], "graph_wide": ["read"]}  # fmt: skip
+    rec = Recorder(lambda r: _json(200, body))
+    async with _client(rec) as og:
+        out = await og.access()
+    assert out.get("client_id") == "studio"
+
+
+async def test_settings_travel_in_query_mutate_and_merge_bodies() -> None:
+    def data(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/branches/merge"):
+            return _json(200, {"source": "s", "target": "main", "dry_run": True,
+                               "outcome": "fast_forward", "commit": None})  # fmt: skip
+        if request.url.path.endswith("/mutate"):
+            return _json(
+                200, {"affected_nodes": 0, "affected_edges": 0, "commit": None}
+            )
+        return _json(200, {"query_name": "q", "target": {}, "row_count": 0, "rows": []})
+
+    rec = Recorder(data)
+    settings: Any = {"change_lineage": "verify"}
+    async with _client(rec) as og:
+        await og.query("query q() { ... }", settings=settings)
+        await og.mutate("query m() { ... }", settings=settings)
+        await og.branches.merge("s", dry_run=True, settings=settings)
+    bodies = [json.loads(r.content) for r in rec.data_requests]
+    assert [b["settings"] for b in bodies] == [settings] * 3
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "field", "cls", "accessor"),
+    [
+        (409, "conflict", "read_set_conflict", ConflictError, "read_set_conflict"),
+        (409, "conflict", "published_dataset_version_conflict", ConflictError,
+         "published_dataset_version_conflict"),
+        (409, "conflict", "change_diff_refusal", ConflictError, "change_diff_refusal"),
+        (409, "conflict", "full_text_index_rebuild_required", ConflictError,
+         "full_text_index_rebuild_required"),
+        (410, "change_feed_gap", "change_feed_gap", omnigraph.GoneError,
+         "change_feed_gap"),
+        (416, "range_not_satisfiable", "blob_range",
+         omnigraph.RangeNotSatisfiableError, "blob_range"),
+        (424, "external_blob_source", "external_blob_source",
+         omnigraph.FailedDependencyError, "external_blob_source"),
+        (503, "recovery_required", "recovery_required",
+         omnigraph.ServiceUnavailableError, "recovery_required"),
+    ],
+)  # fmt: skip
+async def test_error_details_are_exposed(
+    status: int, code: str, field: str, cls: type[Exception], accessor: str
+) -> None:
+    detail = {"marker": field}
+    rec = Recorder(lambda r: _error(status, code, "none", **{field: detail}))
+    async with _client(rec) as og:
+        with pytest.raises(cls) as info:
+            await og.schema.get()
+    assert getattr(info.value, accessor) == detail

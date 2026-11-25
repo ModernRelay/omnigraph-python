@@ -31,6 +31,7 @@ from ._models import (
     QueriesCatalogOutput,
     ReadOutput,
     SchemaOutput,
+    SettingsRequest,
 )
 from ._receipts import valid_merge
 from ._transport import Transport
@@ -100,6 +101,7 @@ class Branches:
         as_commit: bool = False,
         delete_branch: bool = False,
         dry_run: bool = False,
+        settings: SettingsRequest | None = None,
         if_actor: str | None = None,
     ) -> BranchMergeOutput:
         """Merge `source` into `target`.
@@ -116,6 +118,8 @@ class Branches:
             body["delete_branch"] = True
         if dry_run:
             body["dry_run"] = True
+        if settings is not None:
+            body["settings"] = settings
         result = await self._t.request(
             "POST", "/branches/merge", body=body, if_actor=if_actor
         )

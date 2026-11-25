@@ -8,12 +8,20 @@ from typing import Any, cast
 import httpx
 
 from ._models import (
+    BlobRangeOutput,
+    ChangeDiffRefusalOutput,
+    ChangeFeedGapOutput,
     DispositionOutput,
     ErrorCode,
     ErrorOutput,
+    ExternalBlobSourceOutput,
+    FullTextIndexRebuildRequiredOutput,
     KeyConflictOutput,
     MergeConflictOutput,
     PreconditionFailureOutput,
+    PublishedDatasetVersionConflictOutput,
+    ReadSetConflictOutput,
+    RecoveryRequiredOutput,
     ResourceLimitOutput,
 )
 
@@ -121,9 +129,39 @@ class ConflictError(OmnigraphError):
     def key_conflict(self) -> KeyConflictOutput | None:
         return self.body.get("key_conflict") if self.body else None
 
+    @property
+    def read_set_conflict(self) -> ReadSetConflictOutput | None:
+        """A concurrent commit changed what this write read; read again first."""
+        return self.body.get("read_set_conflict") if self.body else None
+
+    @property
+    def published_dataset_version_conflict(
+        self,
+    ) -> PublishedDatasetVersionConflictOutput | None:
+        if not self.body:
+            return None
+        return self.body.get("published_dataset_version_conflict")
+
+    @property
+    def change_diff_refusal(self) -> ChangeDiffRefusalOutput | None:
+        return self.body.get("change_diff_refusal") if self.body else None
+
+    @property
+    def full_text_index_rebuild_required(
+        self,
+    ) -> FullTextIndexRebuildRequiredOutput | None:
+        """This conflict needs operator maintenance, not a retry."""
+        if not self.body:
+            return None
+        return self.body.get("full_text_index_rebuild_required")
+
 
 class GoneError(OmnigraphError):
     """Retained change history is unavailable; recover through a baseline."""
+
+    @property
+    def change_feed_gap(self) -> ChangeFeedGapOutput | None:
+        return self.body.get("change_feed_gap") if self.body else None
 
 
 class PreconditionFailedError(OmnigraphError):
@@ -141,11 +179,15 @@ class PayloadTooLargeError(OmnigraphError):
 
 
 class RangeNotSatisfiableError(OmnigraphError):
-    pass
+    @property
+    def blob_range(self) -> BlobRangeOutput | None:
+        return self.body.get("blob_range") if self.body else None
 
 
 class FailedDependencyError(OmnigraphError):
-    pass
+    @property
+    def external_blob_source(self) -> ExternalBlobSourceOutput | None:
+        return self.body.get("external_blob_source") if self.body else None
 
 
 class TooManyRequestsError(OmnigraphError):
@@ -157,7 +199,9 @@ class InternalServerError(OmnigraphError):
 
 
 class ServiceUnavailableError(OmnigraphError):
-    pass
+    @property
+    def recovery_required(self) -> RecoveryRequiredOutput | None:
+        return self.body.get("recovery_required") if self.body else None
 
 
 class GraphUnavailableError(ServiceUnavailableError):
