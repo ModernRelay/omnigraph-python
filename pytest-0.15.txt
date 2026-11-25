@@ -1,4 +1,5 @@
-$ OMNIGRAPH_TEST_SERVER=1 OMNIGRAPH_BIN_DIR=<v0.15.0> uv run pytest -v
+$ OMNIGRAPH_TEST_SERVER=1 OMNIGRAPH_BIN_DIR=<v0.15.0 release> uv run pytest -v   # 0.15.0 tag point 0d63c8d
+All checks passed!
 tests/test_e2e.py::test_probes PASSED
 tests/test_e2e.py::test_schema_and_access PASSED
 tests/test_e2e.py::test_mutate_and_query_round_trip PASSED
@@ -45,7 +46,7 @@ tests/test_transport.py::test_refused_write_disposition_without_retries[403-not_
 tests/test_transport.py::test_refused_write_disposition_without_retries[403-forbidden-none-False] PASSED
 tests/test_transport.py::test_refused_write_disposition_without_retries[500-outcome_unknown-unknown-True] PASSED
 tests/test_transport.py::test_refused_write_disposition_without_retries[503-service_unavailable-none-False] PASSED
-tests/test_transport.py::test_a_read_error_is_never_outcome_unknown PASSED
+tests/test_transport.py::test_a_read_refusal_the_server_calls_certain_is_not_outcome_unknown PASSED
 tests/test_transport.py::test_transport_loss_after_dispatch_is_outcome_unknown PASSED
 tests/test_transport.py::test_invalid_success_body_never_acknowledges_a_write PASSED
 tests/test_transport.py::test_the_token_never_appears_in_reprs_or_errors PASSED
@@ -66,4 +67,11 @@ tests/test_transport.py::test_error_details_are_exposed[410-change_feed_gap-chan
 tests/test_transport.py::test_error_details_are_exposed[416-range_not_satisfiable-blob_range-RangeNotSatisfiableError-blob_range] PASSED
 tests/test_transport.py::test_error_details_are_exposed[424-external_blob_source-external_blob_source-FailedDependencyError-external_blob_source] PASSED
 tests/test_transport.py::test_error_details_are_exposed[503-recovery_required-recovery_required-ServiceUnavailableError-recovery_required] PASSED
-============================= 67 passed in 14.45s ==============================
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[body0-500-True] PASSED
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[body1-500-True] PASSED
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[body2-500-True] PASSED
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[body3-409-True] PASSED
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[body4-503-False] PASSED
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[gateway timeout-500-False] PASSED
+tests/test_transport.py::test_a_write_without_a_valid_body_stays_uncertain PASSED
+============================= 74 passed in 21.31s ==============================

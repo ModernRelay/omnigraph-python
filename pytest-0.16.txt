@@ -1,4 +1,4 @@
-$ OMNIGRAPH_TEST_SERVER=1 OMNIGRAPH_BIN_DIR=<v0.16.0> uv run pytest -v
+$ OMNIGRAPH_TEST_SERVER=1 OMNIGRAPH_BIN_DIR=<v0.16.0 release> uv run pytest -v   # head 8f9fc8d
 All checks passed!
 tests/test_e2e.py::test_probes PASSED
 tests/test_e2e.py::test_schema_and_access PASSED
@@ -22,6 +22,8 @@ tests/test_e2e.py::test_u64_parameter_above_i64_max_binds[string] PASSED
 tests/test_e2e.py::test_access_reports_maintain_and_no_oauth_client PASSED
 tests/test_e2e.py::test_dry_run_merge_reports_without_writing PASSED
 tests/test_e2e.py::test_recorded_optimize_submit_wait_lookup_cancel PASSED
+tests/test_e2e.py::test_a_run_limited_to_one_dataset_reports_exactly_it PASSED
+tests/test_e2e.py::test_cancelling_an_active_run PASSED
 tests/test_e2e.py::test_unknown_operation_lookup PASSED
 tests/test_e2e.py::test_non_canonical_operation_id_is_refused PASSED
 tests/test_generate.py::test_contract_is_the_header_enum_not_the_release PASSED
@@ -40,6 +42,7 @@ tests/test_operations.py::test_terminal_states[interrupted-True] PASSED
 tests/test_operations.py::test_terminal_states[unsettled-True] PASSED
 tests/test_operations.py::test_optimize_submits_the_callers_id_and_returns_202_record PASSED
 tests/test_operations.py::test_optimize_sends_only_the_id_by_default PASSED
+tests/test_operations.py::test_optimize_refuses_one_string_as_datasets_before_sending PASSED
 tests/test_operations.py::test_lost_submission_is_outcome_unknown_and_not_retried PASSED
 tests/test_operations.py::test_get_and_cancel_routes PASSED
 tests/test_operations.py::test_a_refused_cancel_is_not_outcome_unknown PASSED
@@ -47,6 +50,27 @@ tests/test_operations.py::test_wait_polls_the_lookup_until_terminal PASSED
 tests/test_operations.py::test_wait_stops_at_an_unknown_lookup PASSED
 tests/test_operations.py::test_wait_does_not_retry_an_error PASSED
 tests/test_operations.py::test_wait_is_bounded_by_the_caller PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[optimize-an empty object] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[optimize-another operation's record] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[optimize-found without a record] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[optimize-a record without a state] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[optimize-no in_progress] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[get-an empty object] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[get-another operation's record] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[get-found without a record] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[get-a record without a state] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[get-no in_progress] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[cancel-an empty object] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[cancel-another operation's record] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[cancel-found without a record] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[cancel-a record without a state] PASSED
+tests/test_operations.py::test_a_route_refuses_a_reply_that_is_not_its_receipt[cancel-no in_progress] PASSED
+tests/test_operations.py::test_unknown_is_a_receipt_only_where_the_route_can_answer_it[optimize] PASSED
+tests/test_operations.py::test_unknown_is_a_receipt_only_where_the_route_can_answer_it[get] PASSED
+tests/test_operations.py::test_unknown_is_a_receipt_only_where_the_route_can_answer_it[cancel] PASSED
+tests/test_operations.py::test_wait_stops_at_an_invalid_receipt PASSED
+tests/test_operations.py::test_a_lookup_that_leaves_a_settlement_write_in_doubt_is_uncertain PASSED
+tests/test_operations.py::test_dataset_outcomes_are_exported_under_their_dataset_name PASSED
 tests/test_transport.py::test_contract_header_auth_and_graph_prefix PASSED
 tests/test_transport.py::test_public_probes_skip_discovery_and_credentials PASSED
 tests/test_transport.py::test_failed_discovery_sends_no_data_request PASSED
@@ -72,7 +96,7 @@ tests/test_transport.py::test_refused_write_disposition_without_retries[409-writ
 tests/test_transport.py::test_refused_write_disposition_without_retries[409-writer_fenced-partial-True] PASSED
 tests/test_transport.py::test_refused_write_disposition_without_retries[500-outcome_unknown-unknown-True] PASSED
 tests/test_transport.py::test_refused_write_disposition_without_retries[503-service_unavailable-none-False] PASSED
-tests/test_transport.py::test_a_read_error_is_never_outcome_unknown PASSED
+tests/test_transport.py::test_a_read_refusal_the_server_calls_certain_is_not_outcome_unknown PASSED
 tests/test_transport.py::test_transport_loss_after_dispatch_is_outcome_unknown PASSED
 tests/test_transport.py::test_invalid_success_body_never_acknowledges_a_write PASSED
 tests/test_transport.py::test_the_token_never_appears_in_reprs_or_errors PASSED
@@ -93,6 +117,13 @@ tests/test_transport.py::test_error_details_are_exposed[410-change_feed_gap-chan
 tests/test_transport.py::test_error_details_are_exposed[416-range_not_satisfiable-blob_range-RangeNotSatisfiableError-blob_range] PASSED
 tests/test_transport.py::test_error_details_are_exposed[424-external_blob_source-external_blob_source-FailedDependencyError-external_blob_source] PASSED
 tests/test_transport.py::test_error_details_are_exposed[503-recovery_required-recovery_required-ServiceUnavailableError-recovery_required] PASSED
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[body0-500-True] PASSED
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[body1-500-True] PASSED
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[body2-500-True] PASSED
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[body3-409-True] PASSED
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[body4-503-False] PASSED
+tests/test_transport.py::test_a_read_keeps_the_servers_word_on_uncertainty[gateway timeout-500-False] PASSED
+tests/test_transport.py::test_a_write_without_a_valid_body_stays_uncertain PASSED
 tests/test_transport.py::test_writer_fenced_names_the_epochs PASSED
 tests/test_transport.py::test_a_lost_dry_run_merge_has_no_effects[True-False] PASSED
 tests/test_transport.py::test_a_lost_dry_run_merge_has_no_effects[False-True] PASSED
@@ -100,4 +131,4 @@ tests/test_transport.py::test_an_interrupted_dry_run_reply_has_no_effects PASSED
 tests/test_transport.py::test_a_reply_contradicting_the_dry_run_is_outcome_unknown[reply0] PASSED
 tests/test_transport.py::test_a_reply_contradicting_the_dry_run_is_outcome_unknown[reply1] PASSED
 tests/test_transport.py::test_a_dry_run_reply_without_the_contract_is_outcome_unknown PASSED
-============================= 100 passed in 27.42s =============================
+============================= 131 passed in 21.53s =============================
