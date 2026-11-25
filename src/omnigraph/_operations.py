@@ -146,6 +146,26 @@ class OperationResult(TypedDict):
     operation: NotRequired[Operation | None]
 
 
+def valid_receipt(reply: Any, operation_id: str, *, unknown_allowed: bool) -> bool:
+    """Whether `reply` is a receipt for `operation_id`: a lookup envelope with
+    a boolean `in_progress` whose `found` record names that id and carries a
+    state and an outcome, or an `unknown` lookup where the route can answer one
+    (lookup and cancel; a submission always identifies its record). The one
+    check every operation route applies."""
+    if not isinstance(reply, dict) or not isinstance(reply.get("in_progress"), bool):
+        return False
+    lookup, record = reply.get("lookup"), reply.get("operation")
+    if lookup == "unknown":
+        return unknown_allowed and record is None
+    return (
+        lookup == "found"
+        and isinstance(record, dict)
+        and record.get("operation_id") == operation_id
+        and isinstance(record.get("state"), str)
+        and isinstance(record.get("outcome"), dict)
+    )
+
+
 class Operations:
     """`og.operations`: recorded operations on the client's graph."""
 
@@ -179,37 +199,48 @@ class Operations:
             body["datasets"] = list(datasets)
         if max_gate_hold_ms is not None:
             body["max_gate_hold_ms"] = max_gate_hold_ms
-        return cast(
-            OperationResult,
-            await self._t.request(
-                "POST", "/operations/optimize", body=body, if_actor=if_actor
-            ),
+        return await self._receipt(
+            "POST", "/operations/optimize", operation_id, False, body, if_actor
         )
 
     async def get(
         self, operation_id: str, *, if_actor: str | None = None
     ) -> OperationResult:
         """Look an operation up by its id, whatever its kind."""
-        return cast(
-            OperationResult,
-            await self._t.request(
-                "GET", f"/operations/{quote(operation_id, safe='')}", if_actor=if_actor
-            ),
-        )
+        return await self._receipt(
+            "GET", f"/operations/{quote(operation_id, safe='')}", operation_id, True,
+            None, if_actor,
+        )  # fmt: skip
 
     async def cancel(
         self, operation_id: str, *, if_actor: str | None = None
     ) -> OperationResult:
         """Ask an operation to stop at its next safe boundary. A terminal
         operation is unchanged; a `publishing` one finishes its publication."""
-        return cast(
-            OperationResult,
-            await self._t.request(
-                "POST",
-                f"/operations/{quote(operation_id, safe='')}/cancel",
-                if_actor=if_actor,
-            ),
-        )
+        return await self._receipt(
+            "POST", f"/operations/{quote(operation_id, safe='')}/cancel",
+            operation_id, True, None, if_actor,
+        )  # fmt: skip
+
+    async def _receipt(
+        self,
+        method: str,
+        path: str,
+        operation_id: str,
+        unknown_allowed: bool,
+        body: dict[str, Any] | None,
+        if_actor: str | None,
+    ) -> OperationResult:
+        """Send one operation request and accept only a receipt for its id.
+        An invalid reply is an `ApiContractError`: outcome unknown after a
+        submission or cancellation, which may have written, and certain after
+        a lookup."""
+        reply = await self._t.request(method, path, body=body, if_actor=if_actor)
+        if not valid_receipt(reply, operation_id, unknown_allowed=unknown_allowed):
+            raise self._t.invalid_response(
+                method, path, f"invalid receipt for operation {operation_id}"
+            )
+        return cast(OperationResult, reply)
 
     async def wait(
         self,
@@ -227,10 +258,7 @@ class Operations:
         while True:
             result = await self.get(operation_id, if_actor=if_actor)
             operation = result.get("operation")
-            if (
-                result["lookup"] == "unknown"
-                or operation is None
-                or is_terminal(operation["state"])
-            ):
+            if operation is None or is_terminal(operation["state"]):
+                # A valid receipt has no record only when lookup is unknown.
                 return result
             await asyncio.sleep(interval)

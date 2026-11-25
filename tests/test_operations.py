@@ -201,3 +201,79 @@ async def test_wait_is_bounded_by_the_caller() -> None:
         with pytest.raises(TimeoutError):
             async with asyncio.timeout(0.05):
                 await og.operations.wait(OP_ID, interval=0.01)
+
+
+_ROUTES: list[tuple[str, Any, bool, bool]] = [
+    # name, call, may write (an invalid reply is outcome unknown), unknown allowed
+    ("optimize", lambda og: og.operations.optimize(OP_ID), True, False),
+    ("get", lambda og: og.operations.get(OP_ID), False, True),
+    ("cancel", lambda og: og.operations.cancel(OP_ID), True, True),
+]
+_FOREIGN = "01JC9999999999999999999999"
+_INVALID: list[tuple[str, Any]] = [
+    ("an empty object", {}),
+    ("another operation's record",
+     {"lookup": "found", "in_progress": False,
+      "operation": {**_record("succeeded"), "operation_id": _FOREIGN}}),
+    ("found without a record", {"lookup": "found", "in_progress": False}),
+    ("a record without a state",
+     {"lookup": "found", "in_progress": False,
+      "operation": {"operation_id": OP_ID, "outcome": {}}}),
+    ("no in_progress", {"lookup": "found", "operation": _record("succeeded")}),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("call", "writes", "reply"),
+    [(c, w, r) for _, c, w, _ in _ROUTES for _, r in _INVALID],
+    ids=[f"{n}-{d}" for n, _, _, _ in _ROUTES for d, _ in _INVALID],
+)
+async def test_a_route_refuses_a_reply_that_is_not_its_receipt(
+    call: Any, writes: bool, reply: Any
+) -> None:
+    server = Server((200, reply))
+    async with _client(server) as og:
+        with pytest.raises(omnigraph.ApiContractError) as info:
+            await call(og)
+    assert info.value.request_dispatched is True
+    assert info.value.outcome_unknown is writes
+    assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("call", "unknown_allowed"),
+    [(c, u) for _, c, _, u in _ROUTES],
+    ids=[n for n, _, _, _ in _ROUTES],
+)
+async def test_unknown_is_a_receipt_only_where_the_route_can_answer_it(
+    call: Any, unknown_allowed: bool
+) -> None:
+    server = Server((200, {"lookup": "unknown", "in_progress": False}))
+    async with _client(server) as og:
+        if unknown_allowed:
+            assert (await call(og))["lookup"] == "unknown"
+        else:
+            with pytest.raises(omnigraph.ApiContractError) as info:
+                await call(og)
+            assert info.value.outcome_unknown is True
+
+
+async def test_wait_stops_at_an_invalid_receipt() -> None:
+    server = Server((200, {"lookup": "found", "in_progress": True}))
+    async with _client(server) as og:
+        with pytest.raises(omnigraph.ApiContractError) as info:
+            await og.operations.wait(OP_ID, interval=0)
+    assert info.value.outcome_unknown is False
+
+
+async def test_a_lookup_that_leaves_a_settlement_write_in_doubt_is_uncertain() -> None:
+    doubt = (500, {"error": "resolution write in doubt; retry the lookup",
+                   "code": "outcome_unknown",
+                   "disposition": {"effects": "none", "action": "reconcile"}})  # fmt: skip
+    server = Server(doubt, doubt)
+    async with _client(server) as og:
+        for call in (og.operations.get, og.operations.wait):
+            with pytest.raises(omnigraph.InternalServerError) as info:
+                await call(OP_ID)
+            assert info.value.code == "outcome_unknown"
+            assert info.value.outcome_unknown is True
