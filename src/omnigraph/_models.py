@@ -18,6 +18,7 @@ AccessAction = Literal[
     'commit_publish',
     'commit_drop',
     'invoke_query',
+    'maintain',
 ]
 
 
@@ -31,6 +32,7 @@ class AccessOutput(TypedDict):
     actions: list[AccessAction]
     actor_id: NotRequired[str | None]
     branch: NotRequired[str | None]
+    client_id: NotRequired[str | None]
     graph_id: str
     graph_wide: list[AccessAction]
     target_branch: NotRequired[str | None]
@@ -93,10 +95,6 @@ class BranchDeleteOutput(TypedDict):
     actor_id: NotRequired[str | None]
     name: str
     uri: str
-
-
-class BranchListOutput(TypedDict):
-    branches: list[str]
 
 
 BranchMergeOutcome = Literal['already_up_to_date', 'fast_forward', 'merged']
@@ -318,6 +316,7 @@ EntityKind = Literal['node', 'edge']
 ErrorCode = Literal[
     'unauthorized',
     'forbidden',
+    'not_admitted',
     'bad_request',
     'api_contract_mismatch',
     'actor_mismatch',
@@ -332,6 +331,7 @@ ErrorCode = Literal[
     'conflict',
     'branch_start_refusal',
     'unattached_cannot_publish',
+    'writer_fenced',
     'payload_too_large',
     'unsupported_media_type',
     'range_not_satisfiable',
@@ -377,8 +377,8 @@ class FullTextIndexRequiredOutput(TypedDict):
     A full-text call read a declared full-text index that has no segment at
     the query's snapshot (HTTP 409), so no segment carries its analyzer. This
     is not a retryable conflict: an operator builds the branch's index
-    (`omnigraph optimize` on main, `omnigraph rebuild-full-text-indexes
-    --branch` elsewhere). Historical snapshots stay unchanged.
+    (`omnigraph index build --branch <branch>`). Historical snapshots stay
+    unchanged.
     """
 
     index: str
@@ -483,6 +483,7 @@ class LoadSliceExecutedOutput(TypedDict):
     elapsed_compute_ns: int
     end_ns: int
     partition: int
+    read_ns: NotRequired[int]
     rows: int
     slice: int
     start_ns: int
@@ -518,6 +519,15 @@ class MergeConflictOutput(TypedDict):
     kind: MergeConflictKind
     message: str
     type_name: str
+
+
+OperationLookup = Literal['found', 'unknown']
+
+
+class OperationOutput(TypedDict):
+    in_progress: bool
+    lookup: OperationLookup
+    operation: NotRequired[dict[str, Any] | None]
 
 
 ParamKind = Literal[
@@ -573,6 +583,9 @@ class PublishedDatasetVersionConflictOutput(TypedDict):
     entity_kind: EntityKind
     expected_published_dataset_version: int
     type_name: str
+
+
+RankOrder = Literal['ascending', 'descending']
 
 
 class ReadPageOutput(TypedDict):
@@ -640,6 +653,9 @@ class ResourceLimitOutput(TypedDict):
     resource: str
 
 
+SearchFunction = Literal['nearest', 'bm25', 'rrf']
+
+
 class SettingsRequest(TypedDict):
     """
     The `settings` field of a request: one optional value per `request`-scope
@@ -650,6 +666,7 @@ class SettingsRequest(TypedDict):
     """
 
     ann_nprobes: NotRequired[int]
+    change_lineage: NotRequired[Literal['off', 'on', 'verify']]
     engine: NotRequired[Literal['v2']]
     history_release_bytes: NotRequired[int]
     load_source_max_bytes: NotRequired[int]
@@ -675,6 +692,16 @@ class SnapshotOutput(TypedDict):
     internal_schema_version: int
 
 
+class StartOptimizeRequest(TypedDict):
+    """
+    `POST /graphs/{graph_id}/operations/optimize`.
+    """
+
+    datasets: NotRequired[list[str]]
+    max_gate_hold_ms: NotRequired[int | None]
+    operation_id: str
+
+
 class SystemColumnsOutput(TypedDict):
     """
     A graph's system column spellings (see `SchemaOutput::system_columns`).
@@ -693,6 +720,18 @@ class TextEditOutput(TypedDict):
     end: int
     replacement: str
     start: int
+
+
+class WriterFencedOutput(TypedDict):
+    """
+    The writer epochs of a publish or claim a claimed branch refused. `held`
+    is the serving process's epoch, absent when it holds none; `read` is the
+    epoch a refused claim read; `current` is the branch's epoch.
+    """
+
+    current: int
+    held: NotRequired[int | None]
+    read: NotRequired[int | None]
 
 
 class BlobSelectorOutput(TypedDict):
@@ -721,6 +760,31 @@ class BlobWriteOutput(TypedDict):
     kind: BlobWriteState
     selector: BlobSelectorOutput
     size: NotRequired[int | None]
+
+
+"""
+One live branch as `GET /branches?detailed=true` reports it. `from` and
+    `from_commit_id` say where the branch started, as its `POST /branches`
+    receipt did. A branch deleted and created again under the same name is a
+    new lifetime: its start and creation time are the later creation's. The
+    optional fields are absent on `main`.
+"""
+BranchDetailOutput = TypedDict(
+    'BranchDetailOutput',
+    {
+        'created_at': NotRequired[int | None],
+        'from': NotRequired[str | None],
+        'from_commit_id': NotRequired[str | None],
+        'head': CommitOutput,
+        'name': str,
+        'updated_at': int,
+    },
+)
+
+
+class BranchListOutput(TypedDict):
+    branches: list[str]
+    details: NotRequired[list[BranchDetailOutput]]
 
 
 class BranchMergeRequest(TypedDict):
@@ -941,11 +1005,23 @@ class QueryRequest(TypedDict):
     snapshot: NotRequired[str | None]
 
 
+class RankingOutput(TypedDict):
+    """
+    The ranking a read ordered its rows by.
+    """
+
+    by: SearchFunction
+    exhaustive: bool
+    order: RankOrder
+    score_columns: list[str]
+
+
 class ReadOutput(TypedDict):
     columns: NotRequired[list[str]]
     graph_commit_id: NotRequired[str | None]
     page: NotRequired[ReadPageOutput | None]
     query_name: str
+    ranking: NotRequired[RankingOutput | None]
     row_count: int
     rows: Any
     target: ReadTargetOutput
@@ -1053,6 +1129,7 @@ class ErrorOutput(TypedDict):
     read_set_conflict: NotRequired[ReadSetConflictOutput | None]
     recovery_required: NotRequired[RecoveryRequiredOutput | None]
     resource_limit: NotRequired[ResourceLimitOutput | None]
+    writer_fenced: NotRequired[WriterFencedOutput | None]
 
 
 class LoadExecutedOutput(TypedDict):

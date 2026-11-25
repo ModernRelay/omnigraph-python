@@ -18,8 +18,10 @@ from ._models import (
     LoadMode,
     ReadinessOutput,
     ReadOutput,
+    SettingsRequest,
     SnapshotOutput,
 )
+from ._operations import Operations
 from ._receipts import valid_mutation_receipt
 from ._resources import (
     Blobs,
@@ -41,8 +43,11 @@ def _gq_body(
     name: str | None,
     params: dict[str, Any] | None,
     branch: str | None,
+    settings: SettingsRequest | None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {"query": query}
+    if settings is not None:
+        body["settings"] = settings
     if name is not None:
         body["name"] = name
     if params is not None:
@@ -98,6 +103,7 @@ class Omnigraph:
         self.queries = Queries(transport)
         self.changes = Changes(transport)
         self.blobs = Blobs(transport)
+        self.operations = Operations(transport)
 
     @property
     def base_url(self) -> str:
@@ -172,10 +178,20 @@ class Omnigraph:
         params: dict[str, Any] | None = None,
         branch: str | None = None,
         snapshot: str | None = None,
+        settings: SettingsRequest | None = None,
         if_actor: str | None = None,
     ) -> ReadOutput:
-        """Run a GQ read (`POST /query`). `params` keys match `$name` slots."""
-        body = _gq_body(query, name=name, params=params, branch=branch)
+        """Run a GQ read (`POST /query`). `params` keys match `$name` slots.
+
+        A read ordered by `nearest`, `bm25` or `rrf()` reports `ranking`: the
+        search, its score order, whether it was exhaustive, and the columns
+        holding the score. `settings` applies request-scope session settings,
+        such as `{"change_lineage": "verify"}`; a budget above the server's
+        ceiling is refused with `BadRequestError`.
+        """
+        body = _gq_body(
+            query, name=name, params=params, branch=branch, settings=settings
+        )
         if snapshot is not None:
             body["snapshot"] = snapshot
         return cast(
@@ -191,6 +207,7 @@ class Omnigraph:
         params: dict[str, Any] | None = None,
         branch: str | None = None,
         if_graph_commit: str | None = None,
+        settings: SettingsRequest | None = None,
         if_actor: str | None = None,
     ) -> ChangeOutput:
         """Run a GQ mutation (`POST /mutate`); its statements publish as one commit.
@@ -201,7 +218,9 @@ class Omnigraph:
         successful no-op. A branch statement (`branch create|delete|merge …`)
         names its own branches: send it without `name`, `params`, `branch`.
         """
-        body = _gq_body(query, name=name, params=params, branch=branch)
+        body = _gq_body(
+            query, name=name, params=params, branch=branch, settings=settings
+        )
         if if_graph_commit is not None:
             return cast(
                 ChangeOutput,

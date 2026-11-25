@@ -19,7 +19,6 @@ from ._errors import (
     ConfigurationError,
     NetworkError,
     OmnigraphError,
-    error_body,
     from_response,
 )
 from ._version import HTTP_API_CONTRACT, HTTP_API_CONTRACT_HEADER
@@ -118,9 +117,13 @@ class Transport:
         headers: Mapping[str, str] | None = None,
         if_actor: str | None = None,
         accepted_statuses: Sequence[int] = (),
+        read_only: bool = False,
     ) -> Any:
         """Send one request and return its parsed JSON body. A missing or
-        invalid body never acknowledges a write."""
+        invalid body never acknowledges a write.
+
+        `read_only` marks a request that cannot write although its route can
+        (a dry-run merge): losing its answer leaves no outcome unknown."""
         response = await self.send(
             method,
             path,
@@ -131,6 +134,7 @@ class Transport:
             headers=headers,
             if_actor=if_actor,
             accepted_statuses=accepted_statuses,
+            read_only=read_only,
         )
         try:
             if not response.content:
@@ -145,7 +149,7 @@ class Transport:
                 url=self.url(path),
                 response=response,
                 request_dispatched=True,
-                outcome_unknown=may_write(method, path),
+                outcome_unknown=not read_only and may_write(method, path),
             ) from None
 
     async def send(
@@ -160,6 +164,7 @@ class Transport:
         headers: Mapping[str, str] | None = None,
         if_actor: str | None = None,
         accepted_statuses: Sequence[int] = (),
+        read_only: bool = False,
     ) -> httpx.Response:
         """Send one request and read its whole body."""
         async with self.stream(
@@ -172,11 +177,12 @@ class Transport:
             headers=headers,
             if_actor=if_actor,
             accepted_statuses=accepted_statuses,
+            read_only=read_only,
         ) as response:
             try:
                 await response.aread()
             except httpx.TransportError as e:
-                raise self._transport_error(method, path, e) from e
+                raise self._transport_error(method, path, e, read_only) from e
             return response
 
     @contextlib.asynccontextmanager
@@ -192,6 +198,7 @@ class Transport:
         headers: Mapping[str, str] | None = None,
         if_actor: str | None = None,
         accepted_statuses: Sequence[int] = (),
+        read_only: bool = False,
     ) -> AsyncIterator[httpx.Response]:
         """Send one request and yield the response with its body unread, once
         its status and contract header passed. Closing the context closes the
@@ -223,7 +230,7 @@ class Transport:
         if content_type is not None:
             sent["Content-Type"] = content_type
         params = {k: v for k, v in (query or {}).items() if v is not None}
-        writes = may_write(method, path)
+        writes = not read_only and may_write(method, path)
         request = self._client.build_request(
             method, url, content=content, headers=sent, params=params
         )
@@ -236,7 +243,7 @@ class Transport:
                 url=url,
             ) from e
         except httpx.TransportError as e:
-            raise self._transport_error(method, path, e) from e
+            raise self._transport_error(method, path, e, read_only) from e
         try:
             if not path.startswith(_OAUTH_PREFIX) and response.headers.get_list(
                 HTTP_API_CONTRACT_HEADER
@@ -250,7 +257,9 @@ class Transport:
                     code="api_contract_mismatch",
                     response=response,
                     request_dispatched=True,
-                    outcome_unknown=writes,
+                    # A reply outside the contract cannot confirm that a
+                    # read-only request (a dry run) was treated as one.
+                    outcome_unknown=may_write(method, path),
                 )
             if (
                 not response.is_success
@@ -264,7 +273,7 @@ class Transport:
                     parsed = None
                 raise from_response(
                     response,
-                    error_body(parsed),
+                    parsed,
                     method=method,
                     url=url,
                     may_write=writes,
@@ -274,19 +283,22 @@ class Transport:
             await response.aclose()
 
     def _transport_error(
-        self, method: str, path: str, error: httpx.TransportError
+        self, method: str, path: str, error: httpx.TransportError, read_only: bool
     ) -> NetworkError:
         return NetworkError(
             "HTTP transport failed after dispatch; reconcile writes before retrying",
             method=method,
             url=self.url(path),
             request_dispatched=True,
-            outcome_unknown=may_write(method, path),
+            outcome_unknown=not read_only and may_write(method, path),
         )
 
     def invalid_response(
         self, method: str, path: str, message: str, status: int = 200
     ) -> ApiContractError:
+        """A reply that contradicts its request. It is judged by the route, not
+        by what was asked: a dry-run merge whose reply says it ran no dry run
+        may have merged."""
         return ApiContractError(
             f"{message}; effects are unknown; reconcile before retrying",
             status=status,

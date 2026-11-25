@@ -8,13 +8,22 @@ from typing import Any, cast
 import httpx
 
 from ._models import (
+    BlobRangeOutput,
+    ChangeDiffRefusalOutput,
+    ChangeFeedGapOutput,
     DispositionOutput,
     ErrorCode,
     ErrorOutput,
+    ExternalBlobSourceOutput,
+    FullTextIndexRebuildRequiredOutput,
     KeyConflictOutput,
     MergeConflictOutput,
     PreconditionFailureOutput,
+    PublishedDatasetVersionConflictOutput,
+    ReadSetConflictOutput,
+    RecoveryRequiredOutput,
     ResourceLimitOutput,
+    WriterFencedOutput,
 )
 
 
@@ -90,6 +99,12 @@ class ForbiddenError(OmnigraphError):
     pass
 
 
+class NotAdmittedError(ForbiddenError):
+    """The OIDC token is valid, but the server admits no principal for its
+    subject (`not_admitted`). Signing in again cannot help; the server's
+    operator must admit the identity."""
+
+
 class NotFoundError(OmnigraphError):
     pass
 
@@ -115,9 +130,49 @@ class ConflictError(OmnigraphError):
     def key_conflict(self) -> KeyConflictOutput | None:
         return self.body.get("key_conflict") if self.body else None
 
+    @property
+    def read_set_conflict(self) -> ReadSetConflictOutput | None:
+        """A concurrent commit changed what this write read; read again first."""
+        return self.body.get("read_set_conflict") if self.body else None
+
+    @property
+    def published_dataset_version_conflict(
+        self,
+    ) -> PublishedDatasetVersionConflictOutput | None:
+        if not self.body:
+            return None
+        return self.body.get("published_dataset_version_conflict")
+
+    @property
+    def change_diff_refusal(self) -> ChangeDiffRefusalOutput | None:
+        return self.body.get("change_diff_refusal") if self.body else None
+
+    @property
+    def full_text_index_rebuild_required(
+        self,
+    ) -> FullTextIndexRebuildRequiredOutput | None:
+        """This conflict needs operator maintenance, not a retry."""
+        if not self.body:
+            return None
+        return self.body.get("full_text_index_rebuild_required")
+
+
+class WriterFencedError(ConflictError):
+    """The branch's writer epoch refused this publish or claim
+    (`writer_fenced`): another process claimed the branch. Nothing was
+    written. `writer_fenced` names the epochs."""
+
+    @property
+    def writer_fenced(self) -> WriterFencedOutput | None:
+        return self.body.get("writer_fenced") if self.body else None
+
 
 class GoneError(OmnigraphError):
     """Retained change history is unavailable; recover through a baseline."""
+
+    @property
+    def change_feed_gap(self) -> ChangeFeedGapOutput | None:
+        return self.body.get("change_feed_gap") if self.body else None
 
 
 class PreconditionFailedError(OmnigraphError):
@@ -135,11 +190,15 @@ class PayloadTooLargeError(OmnigraphError):
 
 
 class RangeNotSatisfiableError(OmnigraphError):
-    pass
+    @property
+    def blob_range(self) -> BlobRangeOutput | None:
+        return self.body.get("blob_range") if self.body else None
 
 
 class FailedDependencyError(OmnigraphError):
-    pass
+    @property
+    def external_blob_source(self) -> ExternalBlobSourceOutput | None:
+        return self.body.get("external_blob_source") if self.body else None
 
 
 class TooManyRequestsError(OmnigraphError):
@@ -151,7 +210,9 @@ class InternalServerError(OmnigraphError):
 
 
 class ServiceUnavailableError(OmnigraphError):
-    pass
+    @property
+    def recovery_required(self) -> RecoveryRequiredOutput | None:
+        return self.body.get("recovery_required") if self.body else None
 
 
 class GraphUnavailableError(ServiceUnavailableError):
@@ -196,6 +257,7 @@ _BY_CODE: dict[str, type[OmnigraphError]] = {
     "graph_unavailable": GraphUnavailableError,
     "unauthorized": UnauthorizedError,
     "forbidden": ForbiddenError,
+    "not_admitted": NotAdmittedError,
     "not_found": NotFoundError,
     "method_not_allowed": MethodNotAllowedError,
     "conflict": ConflictError,
@@ -210,6 +272,7 @@ _BY_CODE: dict[str, type[OmnigraphError]] = {
     "request_timeout": RequestTimeoutError,
     "branch_start_refusal": ConflictError,
     "unattached_cannot_publish": ConflictError,
+    "writer_fenced": WriterFencedError,
     "payload_too_large": PayloadTooLargeError,
     "unsupported_media_type": UnsupportedMediaTypeError,
     "range_not_satisfiable": RangeNotSatisfiableError,
@@ -217,6 +280,22 @@ _BY_CODE: dict[str, type[OmnigraphError]] = {
     "deadline_exceeded": BadRequestError,
     "result_too_large": PayloadTooLargeError,
 }
+
+
+def error_class(status: int, code: str | None) -> type[OmnigraphError]:
+    """The status picks the class; a code's class replaces it when it refines
+    it (a subclass, such as `GraphUnavailableError` for a 503 or
+    `NotAdmittedError` for a 403). A code alone decides only when the status
+    has no class of its own."""
+    if code == "api_contract_mismatch":
+        return ApiContractError
+    by_status = _BY_STATUS.get(status)
+    by_code = _BY_CODE.get(code) if code else None
+    if by_status is None:
+        return by_code or InternalServerError
+    if by_code is not None and issubclass(by_code, by_status):
+        return by_code
+    return by_status
 
 
 def error_body(parsed: Any) -> ErrorOutput | None:
@@ -235,26 +314,32 @@ def error_body(parsed: Any) -> ErrorOutput | None:
     return cast(ErrorOutput, parsed)
 
 
+def server_outcome_unknown(parsed: Any) -> bool | None:
+    """Whether an error reply says a write may have taken effect, on any
+    route. Code `outcome_unknown` always does, whatever its disposition reads
+    (a recorded-operation lookup can leave a settlement write in doubt), and
+    a valid disposition otherwise decides. `None` when the reply says
+    neither, so the route decides."""
+    if isinstance(parsed, dict) and parsed.get("code") == "outcome_unknown":
+        return True
+    body = error_body(parsed)
+    return None if body is None else body["disposition"]["effects"] != "none"
+
+
 def from_response(
     response: httpx.Response,
-    body: ErrorOutput | None,
+    parsed: Any,
     *,
     method: str,
     url: str,
     may_write: bool,
 ) -> OmnigraphError:
+    """The error for a non-success reply. `parsed` is its JSON, if any;
+    `may_write` is the route's answer, used only when the reply does not say."""
+    body = error_body(parsed)
     code = body["code"] if body else None
-    if code == "graph_unavailable":
-        cls: type[OmnigraphError] = GraphUnavailableError
-    elif code == "api_contract_mismatch":
-        cls = ApiContractError
-    else:
-        cls = (
-            _BY_STATUS.get(response.status_code)
-            or (_BY_CODE.get(code) if code else None)
-            or InternalServerError
-        )
-    effects = body["disposition"]["effects"] if body else None
+    cls = error_class(response.status_code, code)
+    unknown = server_outcome_unknown(parsed)
     return cls(
         body["error"] if body else f"HTTP {response.status_code}",
         status=response.status_code,
@@ -265,5 +350,5 @@ def from_response(
         body=body,
         response=response,
         request_dispatched=True,
-        outcome_unknown=may_write and effects != "none",
+        outcome_unknown=may_write if unknown is None else unknown,
     )

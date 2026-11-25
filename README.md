@@ -1,7 +1,7 @@
 # omnigraph
 
 Async Python client for the [Omnigraph](https://github.com/ModernRelay/omnigraph) HTTP API,
-contract **0.14**. It mirrors the TypeScript SDK
+generated from `omnigraph-server` **0.16.0** (HTTP contract **0.14**). It mirrors the TypeScript SDK
 [`@modernrelay/omnigraph`](https://github.com/ModernRelay/omnigraph-ts): the same routes, the
 same contract checks, and the same error model, with Python names.
 
@@ -33,11 +33,16 @@ never retries.
 
 ## Versions
 
-The package's major.minor is the HTTP contract it speaks: `omnigraph` 0.14.x talks to
-`omnigraph-server` 0.14.x and refuses any other contract. The patch number is the SDK's own,
-for fixes that change nothing on the wire, so `omnigraph` 0.14.1 does not mean server 0.14.1.
-Upgrade the server and this package together when the minor changes, and pin
-`omnigraph>=0.14,<0.15` to follow SDK fixes for one contract.
+The package's major.minor is the `omnigraph-server` release it is generated from and tested
+against: `omnigraph` 0.14.x is built from server 0.14. The patch number is the SDK's own, for
+fixes that change nothing on the wire, so `omnigraph` 0.14.1 does not mean server 0.14.1.
+`SERVER_VERSION` names the exact server release.
+
+The HTTP contract is a separate, slower-moving number: `HTTP_API_CONTRACT` is read from the
+pinned server's OpenAPI document, and the client refuses a server that speaks another one.
+Server releases that keep the wire contract keep its value, so a newer server on the same
+contract accepts this client; routes and fields added in a later release need that release.
+Pin `omnigraph>=0.14,<0.15` to follow SDK fixes for one server minor.
 
 ## Write and verify
 
@@ -63,6 +68,30 @@ merged = await og.branches.merge("review", delete_branch=True)
 Merge and mutation receipts are validated; a receipt that does not name the requested
 operation raises `ApiContractError`.
 
+`og.branches.list_detailed()` adds `details` to the listing: for each branch the credential
+may read, its head commit, the branch and commit it started from, and when it was created and
+last moved (server 0.15+).
+
+## Ranked reads, settings, and parameters
+
+A read ordered by `nearest`, `bm25` or `rrf()` reports how it ranked its rows:
+
+```python
+read = await og.query(
+    "query near($v: Vector(2)) { match { $s: Spot } return { $s.slug, nearest($s.at, $v) as dist } "
+    "order { nearest($s.at, $v) } limit 10 }",
+    params={"v": [0.1, 0.2]},
+)
+read[
+    "ranking"
+]  # {"by": "nearest", "order": "ascending", "exhaustive": True, "score_columns": ["dist"]}
+```
+
+`query`, `mutate` and `branches.merge` take `settings`, the request's session settings (for
+example `{"change_lineage": "verify"}`). A resource budget above the server's ceiling is refused
+with `BadRequestError`. A `U64` parameter carries its whole range, up to `2**64 - 1`; Python
+integers are sent exactly.
+
 ## Streams, loads, feeds, and blobs
 
 ```python
@@ -83,6 +112,68 @@ await og.queries.invoke("people", params={"name": "Ada"})
 Ordinary JSON requests are limited to 1 MiB by the server; bulk loads go through
 `load_ndjson`.
 
+## Recorded operations
+
+A cluster server started with `OMNIGRAPH_OPERATION_ROUTES=true` runs `optimize` on a graph's
+`main` while it serves, as a recorded operation tracked by an id the caller chose (server
+0.16+; every route needs the `maintain` action on `main`):
+
+```python
+from omnigraph import new_operation_id
+
+op_id = new_operation_id()  # keep it: after a lost response, look it up, never resubmit
+await og.operations.optimize(op_id, datasets=["node:Person"], max_gate_hold_ms=30_000)
+# A timeout ends the wait, not the run: it keeps going on the server.
+async with asyncio.timeout(600):
+    done = await og.operations.wait(op_id)
+operation = done.get("operation")
+if done["lookup"] == "unknown" or operation is None:
+    ...  # the record no longer holds the id; never resubmit the same work under it
+elif operation["state"] == "succeeded":
+    for dataset in operation["outcome"].get("datasets", []):
+        print(dataset["type_key"], dataset["outcome"], dataset.get("reason"))
+```
+
+`get` and `wait` answer `lookup: "unknown"` for an id the record does not hold; that does not
+prove the operation never ran. Resubmitting an id returns its record only while the server's
+record still holds it (the 32 newest terminal operations) and the request is the same; an
+evicted id is refused as expired. Every reply must be a receipt for the id, or the call raises
+`ApiContractError`. `wait` polls only the lookup and lets any error end the wait; retrying a
+lookup is always safe, a 500 `outcome_unknown` included (a lookup can settle a publication in
+doubt). `cancel` is best effort: an `accepted` or `running` run may still end `succeeded`
+(with a late-cancellation `reason`, or with none when the cancel lands as the run finishes on
+server 0.16.0), and a `publishing` run is returned unchanged. Only `cancelled` means it
+stopped.
+A succeeded run may still have deferred or failed datasets: read
+`operation["outcome"]["datasets"]`. The record's types (`Operation`, `OperationResult`) are
+written by hand from the server's record, which the OpenAPI document leaves open.
+
+A merge with `dry_run=True` is a read: a lost answer is not `outcome_unknown`, while a reply
+that contradicts the dry run is.
+
+## Tracing
+
+The server reads W3C `traceparent` and `tracestate`. The client takes an
+`httpx.AsyncBaseTransport`, so add the headers with one that wraps the default:
+
+```python
+class Traced(httpx.AsyncBaseTransport):
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        request.headers["traceparent"] = current_traceparent()  # from your tracer
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+og = Omnigraph(
+    url, graph_id="g", token=TOKEN, transport=Traced(httpx.AsyncHTTPTransport())
+)
+```
+
 ## Errors
 
 Every error is an `OmnigraphError` subclass chosen by status and `code` (`ConflictError`,
@@ -90,7 +181,19 @@ Every error is an `OmnigraphError` subclass chosen by status and `code` (`Confli
 
 - `disposition`: the server's `effects` (`none`, `partial`, `unknown`) and next `action`;
 - `request_dispatched`: whether the request may have reached the server;
-- `outcome_unknown`: a write may have taken effect — reconcile before retrying.
+- `outcome_unknown`: a write may have taken effect — reconcile before retrying. The server's
+  word decides on any route, reads included; only a reply without one falls back to the route.
+
+A code's class refines its status's: `NotAdmittedError` is the `ForbiddenError` for an OIDC
+identity the server does not admit (signing in again will not help; the operator must admit
+it), and `GraphUnavailableError` is the `ServiceUnavailableError` for a graph that is not
+served. `WriterFencedError` is the `ConflictError` for a branch another process claimed
+(`writer_fenced` names the epochs; nothing was written). Error details are properties: `ConflictError.merge_conflicts`, `.key_conflict`,
+`.read_set_conflict`, `PreconditionFailedError.precondition_failure`,
+`PayloadTooLargeError.resource_limit`, `GoneError.change_feed_gap`, and so on.
+
+A graph with no applied policy refuses every action, reads included, with `ForbiddenError`
+(server 0.16; `OMNIGRAPH_ALLOW_READS_WITHOUT_POLICY=1` restores reads for static tokens).
 
 The token never appears in a `repr` or an error message.
 
@@ -105,7 +208,7 @@ Bundles are opaque here, as in the TypeScript SDK; for operator work use
 ```sh
 uv sync
 uv run pytest                      # unit tests (mocked transport)
-OMNIGRAPH_TEST_SERVER=1 OMNIGRAPH_BIN_DIR=/path/to/v0.14.0 uv run pytest tests/test_e2e.py
+OMNIGRAPH_TEST_SERVER=1 OMNIGRAPH_BIN_DIR=/path/to/v0.16.0 uv run pytest tests/test_e2e.py
 uv run python scripts/generate.py --check   # generated files match spec/openapi.json
 uv run mypy && uv run ruff check . && uv run ruff format --check .
 ```

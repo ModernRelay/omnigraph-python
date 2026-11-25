@@ -14,6 +14,7 @@ from ._models import (
     BlobWriteOutput,
     BranchCreateOutput,
     BranchDeleteOutput,
+    BranchListOutput,
     BranchMergeOutput,
     ChangeFeedOutput,
     ChangeOutput,
@@ -30,6 +31,7 @@ from ._models import (
     QueriesCatalogOutput,
     ReadOutput,
     SchemaOutput,
+    SettingsRequest,
 )
 from ._receipts import valid_merge
 from ._transport import Transport
@@ -50,6 +52,23 @@ class Branches:
     async def list(self, *, if_actor: str | None = None) -> builtins.list[str]:
         r = await self._t.request("GET", "/branches", if_actor=if_actor)
         return builtins.list(r["branches"])
+
+    async def list_detailed(self, *, if_actor: str | None = None) -> BranchListOutput:
+        """Every branch name, and `details` for each branch this credential may
+        read: its head commit, where it started, and when it was created and
+        last moved (server 0.15+). `details` follows the order of `branches`; a
+        branch the caller may not read appears in `branches` alone.
+
+        A reply without `details` raises `ApiContractError`.
+        """
+        r = await self._t.request(
+            "GET", "/branches", query={"detailed": "true"}, if_actor=if_actor
+        )
+        if not isinstance(r, dict) or not isinstance(r.get("details"), builtins.list):
+            raise self._t.invalid_response(
+                "GET", "/branches", "branch listing without details"
+            )
+        return cast(BranchListOutput, r)
 
     async def create(
         self,
@@ -82,6 +101,7 @@ class Branches:
         as_commit: bool = False,
         delete_branch: bool = False,
         dry_run: bool = False,
+        settings: SettingsRequest | None = None,
         if_actor: str | None = None,
     ) -> BranchMergeOutput:
         """Merge `source` into `target`.
@@ -89,7 +109,8 @@ class Branches:
         Returns this merge's exact commit, or `commit: None` when already up to
         date. With `delete_branch`, a deletion can fail after a merge that
         landed; inspect `branch_deleted` and `branch_delete_error_details`.
-        Never retry an uncertain merge blindly.
+        Never retry an uncertain merge blindly. A `dry_run` is a read: it
+        reports the outcome the merge would have now and writes nothing.
         """
         body: dict[str, Any] = {"source": source, "target": target}
         if as_commit:
@@ -98,8 +119,12 @@ class Branches:
             body["delete_branch"] = True
         if dry_run:
             body["dry_run"] = True
+        if settings is not None:
+            body["settings"] = settings
+        # A dry run writes nothing, so a lost answer has no effects; a reply
+        # that says it ran no dry run still leaves effects unknown below.
         result = await self._t.request(
-            "POST", "/branches/merge", body=body, if_actor=if_actor
+            "POST", "/branches/merge", body=body, if_actor=if_actor, read_only=dry_run
         )
         if not valid_merge(
             result,

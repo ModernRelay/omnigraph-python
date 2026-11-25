@@ -135,6 +135,12 @@ async def test_graph_scoped_call_without_graph_id_is_refused_before_sending() ->
         (413, "payload_too_large", PayloadTooLargeError),
         (503, "graph_unavailable", GraphUnavailableError),
         (400, "api_contract_mismatch", ApiContractError),
+        (403, "forbidden", omnigraph.ForbiddenError),
+        (403, "not_admitted", omnigraph.NotAdmittedError),
+        # A code's class never overrides a status it does not refine.
+        (409, "not_admitted", ConflictError),
+        (418, "not_admitted", omnigraph.NotAdmittedError),
+        (409, "writer_fenced", omnigraph.WriterFencedError),
     ],
 )
 async def test_errors_map_to_classes(
@@ -172,8 +178,33 @@ async def test_write_outcome_follows_effects(effects: str, unknown: bool) -> Non
     assert info.value.outcome_unknown is unknown
 
 
-async def test_a_read_error_is_never_outcome_unknown() -> None:
-    rec = Recorder(lambda r: _error(400, "bad_request", "unknown"))
+@pytest.mark.parametrize(
+    ("status", "code", "effects", "unknown"),
+    [
+        (403, "not_admitted", "none", False),
+        (403, "forbidden", "none", False),
+        (409, "writer_fenced", "none", False),
+        (409, "writer_fenced", "partial", True),
+        (500, "outcome_unknown", "unknown", True),
+        (503, "service_unavailable", "none", False),
+    ],
+)
+async def test_refused_write_disposition_without_retries(
+    status: int, code: str, effects: str, unknown: bool
+) -> None:
+    rec = Recorder(lambda r: _error(status, code, effects))
+    async with _client(rec) as og:
+        with pytest.raises(omnigraph.OmnigraphError) as info:
+            await og.mutate('query a() { insert A { k: "x" } }')
+    assert info.value.code == code
+    assert info.value.outcome_unknown is unknown
+    assert len(rec.data_requests) == 1
+
+
+async def test_a_read_refusal_the_server_calls_certain_is_not_outcome_unknown() -> None:
+    # A read is uncertain only when the server says so (see
+    # test_a_read_keeps_the_servers_word_on_uncertainty).
+    rec = Recorder(lambda r: _error(400, "bad_request", "none"))
     async with _client(rec) as og:
         with pytest.raises(omnigraph.BadRequestError) as info:
             await og.query("query q() { match { $a: A } return { $a.k } }")
@@ -259,3 +290,213 @@ def test_base_url_must_be_a_plain_server_root() -> None:
     for bad in ("ftp://x", "http://u:p@x", "http://x?q=1", "http://x#f"):
         with pytest.raises(ConfigurationError):
             Omnigraph(bad)
+
+
+def _commit(cid: str, branch: str | None = None) -> dict[str, Any]:
+    return {"graph_commit_id": cid, "graph_manifest_version": 3,
+            "graph_branch": branch, "kind": "published", "published": True}  # fmt: skip
+
+
+async def test_branch_list_detailed_asks_for_details() -> None:
+    body = {
+        "branches": ["feature", "main", "secret"],
+        "details": [
+            {"name": "feature", "head": _commit("c2", "feature"), "from": "main",
+             "from_commit_id": "c1", "created_at": 1714000000000000,
+             "updated_at": 1714000001000000},
+            {"name": "main", "head": _commit("c1"), "updated_at": 1714000000000000},
+        ],
+    }  # fmt: skip
+    rec = Recorder(lambda r: _json(200, body))
+    async with _client(rec) as og:
+        out = await og.branches.list_detailed()
+    (req,) = rec.data_requests
+    assert req.method == "GET" and req.url.params["detailed"] == "true"
+    assert out["branches"] == ["feature", "main", "secret"]
+    assert [d["name"] for d in out["details"]] == ["feature", "main"]
+    assert out["details"][0]["from"] == "main"
+
+
+async def test_branch_list_detailed_without_details_is_a_contract_error() -> None:
+    rec = Recorder(lambda r: _json(200, {"branches": ["main"]}))
+    async with _client(rec) as og:
+        with pytest.raises(ApiContractError) as info:
+            await og.branches.list_detailed()
+    assert info.value.outcome_unknown is False
+
+
+async def test_ranked_read_reports_its_ranking() -> None:
+    body = {
+        "query_name": "q", "target": {"branch": "main"}, "row_count": 1,
+        "rows": [{"d.slug": "a", "score": 1.5}], "columns": ["d.slug", "score"],
+        "ranking": {"by": "bm25", "order": "descending", "exhaustive": True,
+                    "score_columns": ["score"]},
+    }  # fmt: skip
+    rec = Recorder(lambda r: _json(200, body))
+    async with _client(rec) as og:
+        out = await og.query("query q($t: String) { ... }", params={"t": "x"})
+    ranking = out.get("ranking")
+    assert ranking is not None
+    assert ranking["by"] == "bm25" and ranking["order"] == "descending"
+    assert ranking["score_columns"] == ["score"]
+
+
+async def test_access_reports_the_oauth_client() -> None:
+    body = {"graph_id": "g", "actor_id": "principal:p", "client_id": "studio",
+            "actions": ["read"], "graph_wide": ["read"]}  # fmt: skip
+    rec = Recorder(lambda r: _json(200, body))
+    async with _client(rec) as og:
+        out = await og.access()
+    assert out.get("client_id") == "studio"
+
+
+async def test_settings_travel_in_query_mutate_and_merge_bodies() -> None:
+    def data(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/branches/merge"):
+            return _json(200, {"source": "s", "target": "main", "dry_run": True,
+                               "outcome": "fast_forward", "commit": None})  # fmt: skip
+        if request.url.path.endswith("/mutate"):
+            return _json(
+                200, {"affected_nodes": 0, "affected_edges": 0, "commit": None}
+            )
+        return _json(200, {"query_name": "q", "target": {}, "row_count": 0, "rows": []})
+
+    rec = Recorder(data)
+    settings: Any = {"change_lineage": "verify"}
+    async with _client(rec) as og:
+        await og.query("query q() { ... }", settings=settings)
+        await og.mutate("query m() { ... }", settings=settings)
+        await og.branches.merge("s", dry_run=True, settings=settings)
+    bodies = [json.loads(r.content) for r in rec.data_requests]
+    assert [b["settings"] for b in bodies] == [settings] * 3
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "field", "cls", "accessor"),
+    [
+        (409, "conflict", "read_set_conflict", ConflictError, "read_set_conflict"),
+        (409, "conflict", "published_dataset_version_conflict", ConflictError,
+         "published_dataset_version_conflict"),
+        (409, "conflict", "change_diff_refusal", ConflictError, "change_diff_refusal"),
+        (409, "conflict", "full_text_index_rebuild_required", ConflictError,
+         "full_text_index_rebuild_required"),
+        (410, "change_feed_gap", "change_feed_gap", omnigraph.GoneError,
+         "change_feed_gap"),
+        (416, "range_not_satisfiable", "blob_range",
+         omnigraph.RangeNotSatisfiableError, "blob_range"),
+        (424, "external_blob_source", "external_blob_source",
+         omnigraph.FailedDependencyError, "external_blob_source"),
+        (503, "recovery_required", "recovery_required",
+         omnigraph.ServiceUnavailableError, "recovery_required"),
+    ],
+)  # fmt: skip
+async def test_error_details_are_exposed(
+    status: int, code: str, field: str, cls: type[Exception], accessor: str
+) -> None:
+    detail = {"marker": field}
+    rec = Recorder(lambda r: _error(status, code, "none", **{field: detail}))
+    async with _client(rec) as og:
+        with pytest.raises(cls) as info:
+            await og.schema.get()
+    assert getattr(info.value, accessor) == detail
+
+
+@pytest.mark.parametrize(
+    ("body", "status", "unknown"),
+    [
+        # code outcome_unknown wins over any disposition it carries
+        ({"error": "resolution write in doubt", "code": "outcome_unknown",
+          "disposition": {"effects": "none", "action": "reconcile"}}, 500, True),
+        ({"error": "in doubt", "code": "outcome_unknown"}, 500, True),
+        ({"error": "in doubt", "code": "internal",
+          "disposition": {"effects": "unknown", "action": "reconcile"}}, 500, True),
+        ({"error": "half", "code": "conflict",
+          "disposition": {"effects": "partial", "action": "refresh"}}, 409, True),
+        ({"error": "retry", "code": "service_unavailable",
+          "disposition": {"effects": "none", "action": "retry"}}, 503, False),
+        ("gateway timeout", 500, False),
+    ],
+)  # fmt: skip
+async def test_a_read_keeps_the_servers_word_on_uncertainty(
+    body: Any, status: int, unknown: bool
+) -> None:
+    rec = Recorder(lambda r: _json(status, body))
+    async with _client(rec) as og:
+        with pytest.raises(omnigraph.OmnigraphError) as info:
+            await og.snapshot()
+    assert info.value.status == status
+    assert info.value.outcome_unknown is unknown
+    assert len(rec.data_requests) == 1
+
+
+async def test_a_write_without_a_valid_body_stays_uncertain() -> None:
+    rec = Recorder(
+        lambda r: httpx.Response(502, content=b"bad gateway", headers=CONTRACT)
+    )
+    async with _client(rec) as og:
+        with pytest.raises(omnigraph.OmnigraphError) as info:
+            await og.mutate('query q() { insert A { k: "x" } }')
+    assert info.value.outcome_unknown is True
+
+
+async def test_writer_fenced_names_the_epochs() -> None:
+    fenced = {"current": 7, "held": 6}
+    rec = Recorder(lambda r: _error(409, "writer_fenced", "none", writer_fenced=fenced))
+    async with _client(rec) as og:
+        with pytest.raises(omnigraph.WriterFencedError) as info:
+            await og.mutate('query a() { insert A { k: "x" } }')
+    err = info.value
+    assert isinstance(err, ConflictError)
+    assert err.writer_fenced == fenced
+    assert err.outcome_unknown is False
+    assert len(rec.data_requests) == 1
+
+
+def _lost(request: httpx.Request) -> httpx.Response:
+    raise httpx.ReadError("connection reset", request=request)
+
+
+@pytest.mark.parametrize(("dry_run", "unknown"), [(True, False), (False, True)])
+async def test_a_lost_dry_run_merge_has_no_effects(
+    dry_run: bool, unknown: bool
+) -> None:
+    rec = Recorder(_lost)
+    async with _client(rec) as og:
+        with pytest.raises(NetworkError) as info:
+            await og.branches.merge("s", dry_run=dry_run)
+    assert info.value.outcome_unknown is unknown
+    assert len(rec.data_requests) == 1
+
+
+async def test_an_interrupted_dry_run_reply_has_no_effects() -> None:
+    rec = Recorder(lambda r: httpx.Response(200, content=b"{trunc", headers=CONTRACT))
+    async with _client(rec) as og:
+        with pytest.raises(NetworkError) as info:
+            await og.branches.merge("s", dry_run=True)
+    assert info.value.outcome_unknown is False
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        _merge("fast_forward", _commit("c1")),  # it merged
+        {**_merge("fast_forward", None), "dry_run": True, "branch_deleted": True},
+    ],
+)
+async def test_a_reply_contradicting_the_dry_run_is_outcome_unknown(
+    reply: dict[str, Any],
+) -> None:
+    rec = Recorder(lambda r: _json(200, reply))
+    async with _client(rec) as og:
+        with pytest.raises(ApiContractError) as info:
+            await og.branches.merge("s", dry_run=True)
+    assert info.value.outcome_unknown is True
+
+
+async def test_a_dry_run_reply_without_the_contract_is_outcome_unknown() -> None:
+    # Only a reply inside the contract confirms the server ran a dry run.
+    rec = Recorder(lambda r: httpx.Response(200, json=_merge("fast_forward", None)))
+    async with _client(rec) as og:
+        with pytest.raises(ApiContractError) as info:
+            await og.branches.merge("s", dry_run=True)
+    assert info.value.outcome_unknown is True

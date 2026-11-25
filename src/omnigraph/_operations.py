@@ -1,0 +1,278 @@
+"""Recorded operations (server 0.16+): submit, look up, cancel and wait.
+
+A cluster server with `OMNIGRAPH_OPERATION_ROUTES=true` runs `optimize` on a
+graph's `main` as a recorded operation, tracked by an id the caller chose.
+Every route needs the `maintain` action on `main`.
+
+The spec leaves the operation record an open object; the `TypedDict`s here
+describe the record as server 0.16 writes it, with its wire names. A later
+server may add fields.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from collections.abc import Sequence
+from typing import Any, Literal, NotRequired, TypedDict, cast
+from urllib.parse import quote
+
+from ._models import OperationLookup
+from ._transport import Transport
+
+OperationState = Literal[
+    "accepted",
+    "running",
+    "publishing",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "interrupted",
+    "unsettled",
+]
+
+#: States an operation never leaves. `unsettled` means its publication can no
+#: longer be answered (the graph was deleted while it was in doubt).
+TERMINAL_STATES: frozenset[str] = frozenset(
+    {"succeeded", "failed", "cancelled", "interrupted", "unsettled"}
+)
+
+
+def is_terminal(state: str) -> bool:
+    """Whether an operation in `state` is finished."""
+    return state in TERMINAL_STATES
+
+
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def new_operation_id() -> str:
+    """A fresh canonical ULID to submit an operation under.
+
+    Mint it, keep it, then submit: after a lost response, look the same id
+    up instead of submitting again.
+    """
+    value = (time.time_ns() // 1_000_000) << 80 | int.from_bytes(os.urandom(10))
+    return "".join(_CROCKFORD[(value >> shift) & 31] for shift in range(125, -1, -5))
+
+
+class OptimizeRequestRecord(TypedDict):
+    """The request an operation was submitted with."""
+
+    kind: Literal["optimize"]
+    datasets: NotRequired[list[str]]
+    max_gate_hold_ms: NotRequired[int]
+
+
+class DatasetOutcome(TypedDict):
+    """One dataset's outcome in an optimize run."""
+
+    type_key: str
+    #: `optimized`, `unchanged`, `deferred` or `failed`.
+    outcome: str
+    #: Why a `deferred` dataset was not started, or `index_failed` on an
+    #: `optimized` one whose index work failed after its compaction committed.
+    reason: NotRequired[str]
+    detail: NotRequired[str]
+    fragments_removed: int
+    fragments_added: int
+    duration_ms: int
+    source_bytes: NotRequired[int]
+
+
+class TailOutcome(TypedDict):
+    """An outcome after the graph commit; it never fails the operation."""
+
+    outcome: str
+    detail: NotRequired[str]
+
+
+class OptimizeOutcome(TypedDict):
+    kind: Literal["optimize"]
+    start_at: NotRequired[str]
+    #: At most 1,024 datasets, in visit order.
+    datasets: NotRequired[list[DatasetOutcome]]
+    #: Datasets beyond the listed ones, counted by `outcome` or
+    #: `outcome:reason` (for example `deferred:gate_hold_limit`).
+    more_datasets: NotRequired[dict[str, int]]
+    resume_at: NotRequired[str]
+    configuration_clear: NotRequired[TailOutcome]
+    artifact: NotRequired[TailOutcome]
+
+
+class ResolutionProgress(TypedDict):
+    """Where a `publishing` operation's history walk stands."""
+
+    cursor: NotRequired[str]
+    visited: int
+
+
+class OperationTimings(TypedDict, total=False):
+    queued_ms: int
+    gate_hold_ms: int
+    compute_ms: int
+
+
+class Operation(TypedDict):
+    """A recorded operation, with the server's field names."""
+
+    operation_id: str
+    request_digest: str
+    graph: str
+    schema_identity_domain: str
+    settlement_branch: str
+    request: OptimizeRequestRecord
+    principal: str
+    accepted_at: str
+    state: OperationState
+    nonce: NotRequired[str]
+    input_commit: NotRequired[str]
+    input_manifest_version: NotRequired[int]
+    published_commit: NotRequired[str]
+    resolution: NotRequired[ResolutionProgress]
+    outcome: OptimizeOutcome
+    timings: OperationTimings
+    reason: NotRequired[str]
+
+
+class OperationResult(TypedDict):
+    """A submission, lookup or cancellation answer. `lookup: "unknown"` has no
+    `operation`; it does not prove the operation never ran, and is never a
+    reason to resubmit the same work under the same id."""
+
+    lookup: OperationLookup
+    in_progress: bool
+    operation: NotRequired[Operation | None]
+
+
+def valid_receipt(reply: Any, operation_id: str, *, unknown_allowed: bool) -> bool:
+    """Whether `reply` is a receipt for `operation_id`: a lookup envelope with
+    a boolean `in_progress` whose `found` record names that id and carries a
+    state and an outcome, or an `unknown` lookup where the route can answer one
+    (lookup and cancel; a submission always identifies its record). The one
+    check every operation route applies."""
+    if not isinstance(reply, dict) or not isinstance(reply.get("in_progress"), bool):
+        return False
+    lookup, record = reply.get("lookup"), reply.get("operation")
+    if lookup == "unknown":
+        return unknown_allowed and record is None
+    return (
+        lookup == "found"
+        and isinstance(record, dict)
+        and record.get("operation_id") == operation_id
+        and isinstance(record.get("state"), str)
+        and isinstance(record.get("outcome"), dict)
+    )
+
+
+class Operations:
+    """`og.operations`: recorded operations on the client's graph."""
+
+    def __init__(self, transport: Transport) -> None:
+        self._t = transport
+
+    async def optimize(
+        self,
+        operation_id: str,
+        *,
+        datasets: Sequence[str] | None = None,
+        max_gate_hold_ms: int | None = None,
+        if_actor: str | None = None,
+    ) -> OperationResult:
+        """Submit an optimize run of `main` under `operation_id`, a canonical
+        ULID from `new_operation_id()`.
+
+        `datasets` limits the run to these type keys (`node:Person`,
+        `edge:Knows`), in order; `max_gate_hold_ms` bounds how long writers to
+        `main` wait, within the server's ceiling. The answer is the record:
+        accepted or running (HTTP 202), or terminal (200). While the server's
+        record still holds the id (it keeps the 32 newest terminal
+        operations), the same id with the same request (same graph lifetime,
+        branch, request and principal: the request digest) returns that record
+        without running again; an evicted id is refused as expired, and the
+        same id with another request is a `ConflictError`. After an
+        `outcome_unknown` error, look the id up with `get`.
+        """
+        body: dict[str, Any] = {"operation_id": operation_id}
+        if isinstance(datasets, str):
+            # A str is a Sequence[str] of characters; sending it would record
+            # one dataset key per character under this id.
+            raise TypeError("datasets must be a list of type keys, not one string")
+        if datasets is not None:
+            body["datasets"] = list(datasets)
+        if max_gate_hold_ms is not None:
+            body["max_gate_hold_ms"] = max_gate_hold_ms
+        return await self._receipt(
+            "POST", "/operations/optimize", operation_id, False, body, if_actor
+        )
+
+    async def get(
+        self, operation_id: str, *, if_actor: str | None = None
+    ) -> OperationResult:
+        """Look an operation up by its id, whatever its kind. A lookup may
+        settle a publication in doubt, so it can raise `outcome_unknown`;
+        retrying the lookup is safe."""
+        return await self._receipt(
+            "GET", f"/operations/{quote(operation_id, safe='')}", operation_id, True,
+            None, if_actor,
+        )  # fmt: skip
+
+    async def cancel(
+        self, operation_id: str, *, if_actor: str | None = None
+    ) -> OperationResult:
+        """Ask an operation to stop at its next safe boundary; best effort.
+
+        A terminal, unknown or `publishing` operation is returned unchanged and
+        no cancellation is requested for it. An `accepted` or `running` one is
+        asked to stop: it ends `cancelled`, or `succeeded`, usually with a
+        `reason` saying the cancellation arrived late. omnigraph-server 0.16.0
+        gives no reason when the cancel lands as the run finishes, so read
+        the terminal record (`wait`) to know whether it was cancelled."""
+        return await self._receipt(
+            "POST", f"/operations/{quote(operation_id, safe='')}/cancel",
+            operation_id, True, None, if_actor,
+        )  # fmt: skip
+
+    async def _receipt(
+        self,
+        method: str,
+        path: str,
+        operation_id: str,
+        unknown_allowed: bool,
+        body: dict[str, Any] | None,
+        if_actor: str | None,
+    ) -> OperationResult:
+        """Send one operation request and accept only a receipt for its id.
+        An invalid reply is an `ApiContractError`: outcome unknown after a
+        submission or cancellation, which may have written, and certain after
+        a lookup."""
+        reply = await self._t.request(method, path, body=body, if_actor=if_actor)
+        if not valid_receipt(reply, operation_id, unknown_allowed=unknown_allowed):
+            raise self._t.invalid_response(
+                method, path, f"invalid receipt for operation {operation_id}"
+            )
+        return cast(OperationResult, reply)
+
+    async def wait(
+        self,
+        operation_id: str,
+        *,
+        interval: float = 1.0,
+        if_actor: str | None = None,
+    ) -> OperationResult:
+        """Look the operation up every `interval` seconds until it is terminal
+        or the lookup answers `unknown`, and return that answer.
+
+        Only the read route is called, and an error ends the wait: nothing is
+        retried, though retrying a lookup is always safe. Bound the wait with
+        `asyncio.timeout(...)`; ending the wait does not stop the operation,
+        which keeps running on the server (use `cancel`).
+        """
+        while True:
+            result = await self.get(operation_id, if_actor=if_actor)
+            operation = result.get("operation")
+            if operation is None or is_terminal(operation["state"]):
+                # A valid receipt has no record only when lookup is unknown.
+                return result
+            await asyncio.sleep(interval)
