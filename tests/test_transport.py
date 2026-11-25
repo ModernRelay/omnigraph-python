@@ -140,6 +140,7 @@ async def test_graph_scoped_call_without_graph_id_is_refused_before_sending() ->
         # A code's class never overrides a status it does not refine.
         (409, "not_admitted", ConflictError),
         (418, "not_admitted", omnigraph.NotAdmittedError),
+        (409, "writer_fenced", omnigraph.WriterFencedError),
     ],
 )
 async def test_errors_map_to_classes(
@@ -182,6 +183,8 @@ async def test_write_outcome_follows_effects(effects: str, unknown: bool) -> Non
     [
         (403, "not_admitted", "none", False),
         (403, "forbidden", "none", False),
+        (409, "writer_fenced", "none", False),
+        (409, "writer_fenced", "partial", True),
         (500, "outcome_unknown", "unknown", True),
         (503, "service_unavailable", "none", False),
     ],
@@ -434,3 +437,16 @@ async def test_a_write_without_a_valid_body_stays_uncertain() -> None:
         with pytest.raises(omnigraph.OmnigraphError) as info:
             await og.mutate('query q() { insert A { k: "x" } }')
     assert info.value.outcome_unknown is True
+
+
+async def test_writer_fenced_names_the_epochs() -> None:
+    fenced = {"current": 7, "held": 6}
+    rec = Recorder(lambda r: _error(409, "writer_fenced", "none", writer_fenced=fenced))
+    async with _client(rec) as og:
+        with pytest.raises(omnigraph.WriterFencedError) as info:
+            await og.mutate('query a() { insert A { k: "x" } }')
+    err = info.value
+    assert isinstance(err, ConflictError)
+    assert err.writer_fenced == fenced
+    assert err.outcome_unknown is False
+    assert len(rec.data_requests) == 1

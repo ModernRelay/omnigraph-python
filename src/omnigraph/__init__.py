@@ -24,6 +24,7 @@ from ._errors import (
     TooManyRequestsError,
     UnauthorizedError,
     UnsupportedMediaTypeError,
+    WriterFencedError,
 )
 from ._version import HTTP_API_CONTRACT, HTTP_API_CONTRACT_HEADER, SERVER_VERSION
 
@@ -54,4 +55,5 @@ __all__ = [
     "TooManyRequestsError",
     "UnauthorizedError",
     "UnsupportedMediaTypeError",
+    "WriterFencedError",
 ]

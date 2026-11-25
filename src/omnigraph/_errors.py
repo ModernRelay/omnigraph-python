@@ -23,6 +23,7 @@ from ._models import (
     ReadSetConflictOutput,
     RecoveryRequiredOutput,
     ResourceLimitOutput,
+    WriterFencedOutput,
 )
 
 
@@ -156,6 +157,16 @@ class ConflictError(OmnigraphError):
         return self.body.get("full_text_index_rebuild_required")
 
 
+class WriterFencedError(ConflictError):
+    """The branch's writer epoch refused this publish or claim
+    (`writer_fenced`): another process claimed the branch. Nothing was
+    written. `writer_fenced` names the epochs."""
+
+    @property
+    def writer_fenced(self) -> WriterFencedOutput | None:
+        return self.body.get("writer_fenced") if self.body else None
+
+
 class GoneError(OmnigraphError):
     """Retained change history is unavailable; recover through a baseline."""
 
@@ -261,6 +272,7 @@ _BY_CODE: dict[str, type[OmnigraphError]] = {
     "request_timeout": RequestTimeoutError,
     "branch_start_refusal": ConflictError,
     "unattached_cannot_publish": ConflictError,
+    "writer_fenced": WriterFencedError,
     "payload_too_large": PayloadTooLargeError,
     "unsupported_media_type": UnsupportedMediaTypeError,
     "range_not_satisfiable": RangeNotSatisfiableError,
