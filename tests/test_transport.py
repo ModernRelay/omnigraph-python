@@ -450,3 +450,53 @@ async def test_writer_fenced_names_the_epochs() -> None:
     assert err.writer_fenced == fenced
     assert err.outcome_unknown is False
     assert len(rec.data_requests) == 1
+
+
+def _lost(request: httpx.Request) -> httpx.Response:
+    raise httpx.ReadError("connection reset", request=request)
+
+
+@pytest.mark.parametrize(("dry_run", "unknown"), [(True, False), (False, True)])
+async def test_a_lost_dry_run_merge_has_no_effects(
+    dry_run: bool, unknown: bool
+) -> None:
+    rec = Recorder(_lost)
+    async with _client(rec) as og:
+        with pytest.raises(NetworkError) as info:
+            await og.branches.merge("s", dry_run=dry_run)
+    assert info.value.outcome_unknown is unknown
+    assert len(rec.data_requests) == 1
+
+
+async def test_an_interrupted_dry_run_reply_has_no_effects() -> None:
+    rec = Recorder(lambda r: httpx.Response(200, content=b"{trunc", headers=CONTRACT))
+    async with _client(rec) as og:
+        with pytest.raises(NetworkError) as info:
+            await og.branches.merge("s", dry_run=True)
+    assert info.value.outcome_unknown is False
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        _merge("fast_forward", _commit("c1")),  # it merged
+        {**_merge("fast_forward", None), "dry_run": True, "branch_deleted": True},
+    ],
+)
+async def test_a_reply_contradicting_the_dry_run_is_outcome_unknown(
+    reply: dict[str, Any],
+) -> None:
+    rec = Recorder(lambda r: _json(200, reply))
+    async with _client(rec) as og:
+        with pytest.raises(ApiContractError) as info:
+            await og.branches.merge("s", dry_run=True)
+    assert info.value.outcome_unknown is True
+
+
+async def test_a_dry_run_reply_without_the_contract_is_outcome_unknown() -> None:
+    # Only a reply inside the contract confirms the server ran a dry run.
+    rec = Recorder(lambda r: httpx.Response(200, json=_merge("fast_forward", None)))
+    async with _client(rec) as og:
+        with pytest.raises(ApiContractError) as info:
+            await og.branches.merge("s", dry_run=True)
+    assert info.value.outcome_unknown is True

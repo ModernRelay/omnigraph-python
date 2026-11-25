@@ -109,7 +109,8 @@ class Branches:
         Returns this merge's exact commit, or `commit: None` when already up to
         date. With `delete_branch`, a deletion can fail after a merge that
         landed; inspect `branch_deleted` and `branch_delete_error_details`.
-        Never retry an uncertain merge blindly.
+        Never retry an uncertain merge blindly. A `dry_run` is a read: it
+        reports the outcome the merge would have now and writes nothing.
         """
         body: dict[str, Any] = {"source": source, "target": target}
         if as_commit:
@@ -120,8 +121,10 @@ class Branches:
             body["dry_run"] = True
         if settings is not None:
             body["settings"] = settings
+        # A dry run writes nothing, so a lost answer has no effects; a reply
+        # that says it ran no dry run still leaves effects unknown below.
         result = await self._t.request(
-            "POST", "/branches/merge", body=body, if_actor=if_actor
+            "POST", "/branches/merge", body=body, if_actor=if_actor, read_only=dry_run
         )
         if not valid_merge(
             result,
