@@ -171,6 +171,10 @@ class Operations:
         `outcome_unknown` error, look the id up with `get`.
         """
         body: dict[str, Any] = {"operation_id": operation_id}
+        if isinstance(datasets, str):
+            # A str is a Sequence[str] of characters; sending it would record
+            # one dataset key per character under this id.
+            raise TypeError("datasets must be a list of type keys, not one string")
         if datasets is not None:
             body["datasets"] = list(datasets)
         if max_gate_hold_ms is not None:

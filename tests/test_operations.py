@@ -95,6 +95,14 @@ async def test_optimize_sends_only_the_id_by_default() -> None:
     assert json.loads(server.requests[0].content) == {"operation_id": OP_ID}
 
 
+async def test_optimize_refuses_one_string_as_datasets_before_sending() -> None:
+    server = Server()
+    async with _client(server) as og:
+        with pytest.raises(TypeError, match="list of type keys"):
+            await og.operations.optimize(OP_ID, datasets="node:Person")
+    assert server.requests == []
+
+
 async def test_lost_submission_is_outcome_unknown_and_not_retried() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "HEAD":
