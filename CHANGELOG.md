@@ -12,12 +12,22 @@ Generated from and tested against `omnigraph-server` 0.16.0, which still speaks 
 
 - `og.operations` for recorded operations: `optimize(operation_id, datasets=...,
   max_gate_hold_ms=...)`, `get`, `cancel`, and `wait`, which polls the lookup until the record
-  is terminal. `new_operation_id()` mints the canonical ULID to submit under; `is_terminal()`
+  is terminal. The caller mints the id with `new_operation_id()` and keeps it before
+  submitting; `optimize` never mints one. `is_terminal()`
   and `TERMINAL_STATES` name the final states. `Operation`, `OperationResult`,
   `OptimizeOutcome` and `DatasetOutcome` type the record.
 - `WriterFencedError`, a `ConflictError`, for the new `writer_fenced` code, with
   `writer_fenced` (`current`, `held`, `read` epochs). A refused write is not `outcome_unknown`.
 - Types for the `maintain` access action and `WriterFencedOutput`.
+
+### Fixed
+
+- Every operation route accepts only a receipt for the id it was given: a lookup envelope
+  whose `found` record names that id, or `unknown` where the route can answer it (lookup and
+  cancel). Anything else raises `ApiContractError`, `outcome_unknown` after a submission or
+  cancellation. Before, `{}` under HTTP 200 counted as an accepted operation.
+- `optimize(datasets="node:Person")` raises `TypeError` instead of sending one key per
+  character.
 
 ### Changed
 
@@ -35,6 +45,13 @@ Generated from and tested against `omnigraph-server` 0.16.0, which still speaks 
   delete or overwrite load overtaken by another commit reruns instead of failing.
 - Deployment routes answer a failed control-state read with 503 (retry) or 500, with
   `effects: none`, instead of 409.
+- A recorded-operation lookup can answer 500 `outcome_unknown` when a settlement write it made
+  has no definite answer; it is `outcome_unknown`, and retrying the lookup is safe. `cancel`
+  is best effort and returns a `publishing` operation unchanged.
+- A merge refused by its validation limit names the resource
+  `branch-merge retained validation key bytes` (it was `… delta bytes`) and counts only the
+  delta's keys. `PayloadTooLargeError.resource_limit` already carries the new name; match on
+  the code, not the name.
 
 ## 0.15.0
 
