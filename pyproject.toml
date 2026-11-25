@@ -1,6 +1,6 @@
 [project]
 name = "omnigraph"
-version = "0.14.0"
+version = "0.15.0"
 description = "Python client for the Omnigraph HTTP API"
 readme = "README.md"
 license = "MIT"
@@ -21,7 +21,7 @@ Issues = "https://github.com/ModernRelay/omnigraph/issues"
 [tool.omnigraph]
 # The server release this SDK is generated from and tested against. The SDK
 # minor tracks the server minor; `spec/openapi.json` is that release's file.
-server-version = "0.14.0"
+server-version = "0.15.0"
 
 [dependency-groups]
 dev = [

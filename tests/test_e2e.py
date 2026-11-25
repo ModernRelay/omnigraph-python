@@ -1,4 +1,4 @@
-"""Live tests against `omnigraph-server` 0.14.0.
+"""Live tests against the pinned `omnigraph-server` release (`SERVER_VERSION`).
 
 Set `OMNIGRAPH_TEST_SERVER=1` and `OMNIGRAPH_BIN_DIR` to a directory holding
 the release's `omnigraph` and `omnigraph-server`. The fixture bootstraps a
@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from omnigraph import (
+    SERVER_VERSION,
     ConflictError,
     NotFoundError,
     Omnigraph,
@@ -157,7 +158,7 @@ COUNT = "query c() { match { $p: Person } return { count($p) as n } }"
 
 
 async def test_probes(og: Omnigraph) -> None:
-    assert (await og.health())["version"] == "0.14.0"
+    assert (await og.health())["version"] == SERVER_VERSION
     assert (await og.readiness())["ready"] is True
 
 
