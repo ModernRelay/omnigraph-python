@@ -65,7 +65,7 @@ class OptimizeRequestRecord(TypedDict):
     max_gate_hold_ms: NotRequired[int]
 
 
-class TableOutcome(TypedDict):
+class DatasetOutcome(TypedDict):
     """One dataset's outcome in an optimize run."""
 
     type_key: str
@@ -92,7 +92,7 @@ class OptimizeOutcome(TypedDict):
     kind: Literal["optimize"]
     start_at: NotRequired[str]
     #: At most 1,024 datasets, in visit order.
-    datasets: NotRequired[list[TableOutcome]]
+    datasets: NotRequired[list[DatasetOutcome]]
     #: Datasets beyond the listed ones, counted by `outcome` or
     #: `outcome:reason` (for example `deferred:gate_hold_limit`).
     more_datasets: NotRequired[dict[str, int]]
@@ -186,8 +186,12 @@ class Operations:
         `datasets` limits the run to these type keys (`node:Person`,
         `edge:Knows`), in order; `max_gate_hold_ms` bounds how long writers to
         `main` wait, within the server's ceiling. The answer is the record:
-        accepted or running (HTTP 202), or terminal (200). Submitting the same
-        id with the same request returns the existing record. After an
+        accepted or running (HTTP 202), or terminal (200). While the server's
+        record still holds the id (it keeps the 32 newest terminal
+        operations), the same id with the same request (same graph lifetime,
+        branch, request and principal: the request digest) returns that record
+        without running again; an evicted id is refused as expired, and the
+        same id with another request is a `ConflictError`. After an
         `outcome_unknown` error, look the id up with `get`.
         """
         body: dict[str, Any] = {"operation_id": operation_id}
@@ -206,7 +210,9 @@ class Operations:
     async def get(
         self, operation_id: str, *, if_actor: str | None = None
     ) -> OperationResult:
-        """Look an operation up by its id, whatever its kind."""
+        """Look an operation up by its id, whatever its kind. A lookup may
+        settle a publication in doubt, so it can raise `outcome_unknown`;
+        retrying the lookup is safe."""
         return await self._receipt(
             "GET", f"/operations/{quote(operation_id, safe='')}", operation_id, True,
             None, if_actor,
@@ -215,8 +221,14 @@ class Operations:
     async def cancel(
         self, operation_id: str, *, if_actor: str | None = None
     ) -> OperationResult:
-        """Ask an operation to stop at its next safe boundary. A terminal
-        operation is unchanged; a `publishing` one finishes its publication."""
+        """Ask an operation to stop at its next safe boundary; best effort.
+
+        A terminal, unknown or `publishing` operation is returned unchanged and
+        no cancellation is requested for it. An `accepted` or `running` one is
+        asked to stop: it ends `cancelled`, or `succeeded`, usually with a
+        `reason` saying the cancellation arrived late. omnigraph-server 0.16.0
+        gives no reason when the cancel lands as the run finishes, so read
+        the terminal record (`wait`) to know whether it was cancelled."""
         return await self._receipt(
             "POST", f"/operations/{quote(operation_id, safe='')}/cancel",
             operation_id, True, None, if_actor,
@@ -253,7 +265,9 @@ class Operations:
         or the lookup answers `unknown`, and return that answer.
 
         Only the read route is called, and an error ends the wait: nothing is
-        retried. Bound the wait with `asyncio.timeout(...)`.
+        retried, though retrying a lookup is always safe. Bound the wait with
+        `asyncio.timeout(...)`; ending the wait does not stop the operation,
+        which keeps running on the server (use `cancel`).
         """
         while True:
             result = await self.get(operation_id, if_actor=if_actor)

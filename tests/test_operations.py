@@ -277,3 +277,11 @@ async def test_a_lookup_that_leaves_a_settlement_write_in_doubt_is_uncertain() -
                 await call(OP_ID)
             assert info.value.code == "outcome_unknown"
             assert info.value.outcome_unknown is True
+
+
+def test_dataset_outcomes_are_exported_under_their_dataset_name() -> None:
+    # 0.16 (omnigraph 9575c176) names a run's outcomes per dataset, not table.
+    assert "DatasetOutcome" in omnigraph.__all__
+    assert "TableOutcome" not in omnigraph.__all__
+    hints = omnigraph.OptimizeOutcome.__annotations__["datasets"]
+    assert "DatasetOutcome" in str(hints)

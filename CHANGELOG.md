@@ -14,7 +14,7 @@ Generated from and tested against `omnigraph-server` 0.16.0, which still speaks 
   max_gate_hold_ms=...)`, `get`, `cancel`, and `wait`, which polls the lookup until the record
   is terminal. `new_operation_id()` mints the canonical ULID to submit under; `is_terminal()`
   and `TERMINAL_STATES` name the final states. `Operation`, `OperationResult`,
-  `OptimizeOutcome` and `TableOutcome` type the record.
+  `OptimizeOutcome` and `DatasetOutcome` type the record.
 - `WriterFencedError`, a `ConflictError`, for the new `writer_fenced` code, with
   `writer_fenced` (`current`, `held`, `read` epochs). A refused write is not `outcome_unknown`.
 - Types for the `maintain` access action and `WriterFencedOutput`.

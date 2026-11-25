@@ -123,20 +123,56 @@ from omnigraph import new_operation_id
 
 op_id = new_operation_id()  # keep it: after a lost response, look it up, never resubmit
 await og.operations.optimize(op_id, datasets=["node:Person"], max_gate_hold_ms=30_000)
+# A timeout ends the wait, not the run: it keeps going on the server.
 async with asyncio.timeout(600):
     done = await og.operations.wait(op_id)
-state = done["operation"]["state"]  # terminal: is_terminal(state)
-await og.operations.cancel(op_id)
+operation = done.get("operation")
+if done["lookup"] == "unknown" or operation is None:
+    ...  # the record no longer holds the id; never resubmit the same work under it
+elif operation["state"] == "succeeded":
+    for dataset in operation["outcome"].get("datasets", []):
+        print(dataset["type_key"], dataset["outcome"], dataset.get("reason"))
 ```
 
 `get` and `wait` answer `lookup: "unknown"` for an id the record does not hold; that does not
-prove the operation never ran. `wait` polls only the lookup and lets any error end the wait.
+prove the operation never ran. Resubmitting an id returns its record only while the server's
+record still holds it (the 32 newest terminal operations) and the request is the same; an
+evicted id is refused as expired. Every reply must be a receipt for the id, or the call raises
+`ApiContractError`. `wait` polls only the lookup and lets any error end the wait; retrying a
+lookup is always safe, a 500 `outcome_unknown` included (a lookup can settle a publication in
+doubt). `cancel` is best effort: an `accepted` or `running` run may still end `succeeded`
+(with a late-cancellation `reason`, or with none when the cancel lands as the run finishes on
+server 0.16.0), and a `publishing` run is returned unchanged. Only `cancelled` means it
+stopped.
 A succeeded run may still have deferred or failed datasets: read
 `operation["outcome"]["datasets"]`. The record's types (`Operation`, `OperationResult`) are
 written by hand from the server's record, which the OpenAPI document leaves open.
 
 A merge with `dry_run=True` is a read: a lost answer is not `outcome_unknown`, while a reply
 that contradicts the dry run is.
+
+## Tracing
+
+The server reads W3C `traceparent` and `tracestate`. The client takes an
+`httpx.AsyncBaseTransport`, so add the headers with one that wraps the default:
+
+```python
+class Traced(httpx.AsyncBaseTransport):
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        request.headers["traceparent"] = current_traceparent()  # from your tracer
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+og = Omnigraph(
+    url, graph_id="g", token=TOKEN, transport=Traced(httpx.AsyncHTTPTransport())
+)
+```
 
 ## Errors
 

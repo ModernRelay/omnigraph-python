@@ -28,11 +28,11 @@ from ._errors import (
 )
 from ._operations import (
     TERMINAL_STATES,
+    DatasetOutcome,
     Operation,
     OperationResult,
     OperationState,
     OptimizeOutcome,
-    TableOutcome,
     is_terminal,
     new_operation_id,
 )
@@ -47,6 +47,7 @@ __all__ = [
     "BadRequestError",
     "ConfigurationError",
     "ConflictError",
+    "DatasetOutcome",
     "FailedDependencyError",
     "ForbiddenError",
     "GoneError",
@@ -67,7 +68,6 @@ __all__ = [
     "RangeNotSatisfiableError",
     "RequestTimeoutError",
     "ServiceUnavailableError",
-    "TableOutcome",
     "TooManyRequestsError",
     "UnauthorizedError",
     "UnsupportedMediaTypeError",
