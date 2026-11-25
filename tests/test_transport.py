@@ -285,3 +285,36 @@ def test_base_url_must_be_a_plain_server_root() -> None:
     for bad in ("ftp://x", "http://u:p@x", "http://x?q=1", "http://x#f"):
         with pytest.raises(ConfigurationError):
             Omnigraph(bad)
+
+
+def _commit(cid: str, branch: str | None = None) -> dict[str, Any]:
+    return {"graph_commit_id": cid, "graph_manifest_version": 3,
+            "graph_branch": branch, "kind": "published", "published": True}  # fmt: skip
+
+
+async def test_branch_list_detailed_asks_for_details() -> None:
+    body = {
+        "branches": ["feature", "main", "secret"],
+        "details": [
+            {"name": "feature", "head": _commit("c2", "feature"), "from": "main",
+             "from_commit_id": "c1", "created_at": 1714000000000000,
+             "updated_at": 1714000001000000},
+            {"name": "main", "head": _commit("c1"), "updated_at": 1714000000000000},
+        ],
+    }  # fmt: skip
+    rec = Recorder(lambda r: _json(200, body))
+    async with _client(rec) as og:
+        out = await og.branches.list_detailed()
+    (req,) = rec.data_requests
+    assert req.method == "GET" and req.url.params["detailed"] == "true"
+    assert out["branches"] == ["feature", "main", "secret"]
+    assert [d["name"] for d in out["details"]] == ["feature", "main"]
+    assert out["details"][0]["from"] == "main"
+
+
+async def test_branch_list_detailed_without_details_is_a_contract_error() -> None:
+    rec = Recorder(lambda r: _json(200, {"branches": ["main"]}))
+    async with _client(rec) as og:
+        with pytest.raises(ApiContractError) as info:
+            await og.branches.list_detailed()
+    assert info.value.outcome_unknown is False

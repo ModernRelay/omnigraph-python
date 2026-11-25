@@ -14,6 +14,7 @@ from ._models import (
     BlobWriteOutput,
     BranchCreateOutput,
     BranchDeleteOutput,
+    BranchListOutput,
     BranchMergeOutput,
     ChangeFeedOutput,
     ChangeOutput,
@@ -50,6 +51,23 @@ class Branches:
     async def list(self, *, if_actor: str | None = None) -> builtins.list[str]:
         r = await self._t.request("GET", "/branches", if_actor=if_actor)
         return builtins.list(r["branches"])
+
+    async def list_detailed(self, *, if_actor: str | None = None) -> BranchListOutput:
+        """Every branch name, and `details` for each branch this credential may
+        read: its head commit, where it started, and when it was created and
+        last moved (server 0.15+). `details` follows the order of `branches`; a
+        branch the caller may not read appears in `branches` alone.
+
+        A reply without `details` raises `ApiContractError`.
+        """
+        r = await self._t.request(
+            "GET", "/branches", query={"detailed": "true"}, if_actor=if_actor
+        )
+        if not isinstance(r, dict) or not isinstance(r.get("details"), builtins.list):
+            raise self._t.invalid_response(
+                "GET", "/branches", "branch listing without details"
+            )
+        return cast(BranchListOutput, r)
 
     async def create(
         self,
