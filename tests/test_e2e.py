@@ -3,14 +3,15 @@
 Set `OMNIGRAPH_TEST_SERVER=1` and `OMNIGRAPH_BIN_DIR` to a directory holding
 the release's `omnigraph` and `omnigraph-server`. The fixture bootstraps a
 one-graph cluster on a local `file://` root and boots the server with a bearer
-token and a policy that grants the test actor the data-plane actions.
+token and a policy that grants the test actor the data-plane actions and
+`maintain`, with the recorded-operation routes enabled.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import re
 import socket
 import subprocess
 import time
@@ -23,12 +24,15 @@ import pytest
 
 from omnigraph import (
     SERVER_VERSION,
+    BadRequestError,
     ConflictError,
     NotFoundError,
     Omnigraph,
     PayloadTooLargeError,
     PreconditionFailedError,
     UnauthorizedError,
+    is_terminal,
+    new_operation_id,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -74,7 +78,7 @@ rules:
   - id: rw
     allow:
       actors: {{ group: sdk }}
-      actions: [read, change, export]
+      actions: [read, change, export, maintain]
       branch_scope: any
   - id: branches
     allow:
@@ -117,25 +121,33 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
     (bundle / "g.pg").write_text(SCHEMA)
     (bundle / "graph.policy.yaml").write_text(POLICY)
     env = {**os.environ, "OMNIGRAPH_HOME": str(work / "home")}
-    r = subprocess.run(
+    subprocess.run(
         [str(bin_dir / "omnigraph"), "cluster", "apply", "--target", f"file://{root}",
          "--config", str(bundle), "--as", ACTOR, "--json"],
         capture_output=True, text=True, env=env, check=True,
     )  # fmt: skip
-    lock = re.search(r"Admission lock: (\S+);", r.stderr)
-    assert lock, r.stderr
-    subprocess.run(
-        [str(bin_dir / "omnigraph"), "--target", f"file://{root}", "cluster",
-         "force-unlock", lock.group(1)],
-        capture_output=True, env=env, check=True,
+    # 0.16 releases the lock after a converged direct apply; an older CLI
+    # leaves it held. Unlock only what `cluster status` still reports.
+    status = subprocess.run(
+        [str(bin_dir / "omnigraph"), "cluster", "status", "--target", f"file://{root}",
+         "--json"],
+        capture_output=True, text=True, env=env, check=True,
     )  # fmt: skip
+    lock = json.loads(status.stdout).get("lock_id")
+    if lock:
+        subprocess.run(
+            [str(bin_dir / "omnigraph"), "--target", f"file://{root}", "cluster",
+             "force-unlock", lock],
+            capture_output=True, env=env, check=True,
+        )  # fmt: skip
     token = os.urandom(12).hex()
     port = _free_port()
     proc = subprocess.Popen(
         [str(bin_dir / "omnigraph-server"), "--cluster", f"file://{root}",
          "--bind", f"127.0.0.1:{port}"],
         stdout=(work / "server.log").open("wb"), stderr=subprocess.STDOUT,
-        env={**env, "OMNIGRAPH_SERVER_BEARER_TOKENS_JSON": json.dumps({ACTOR: token})},
+        env={**env, "OMNIGRAPH_SERVER_BEARER_TOKENS_JSON": json.dumps({ACTOR: token}),
+             "OMNIGRAPH_OPERATION_ROUTES": "true"},
     )  # fmt: skip
     base = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + 30
@@ -369,3 +381,66 @@ async def test_u64_parameter_above_i64_max_binds(og: Omnigraph, value: object) -
         params={"n": value},
     )
     assert {"c.name": name, "c.n": U64_MAX} in read["rows"], read["rows"]
+
+
+async def test_access_reports_maintain_and_no_oauth_client(og: Omnigraph) -> None:
+    access = await og.access(branch="main")
+    assert "maintain" in access["actions"]
+    assert access.get("client_id") is None  # a static token has no OAuth client
+
+
+async def test_dry_run_merge_reports_without_writing(og: Omnigraph) -> None:
+    await og.branches.create("sdk_dry")
+    await og.mutate(INSERT_PERSON, params={"n": "dry", "c": None}, branch="sdk_dry")
+    head = (await og.query(COUNT))["graph_commit_id"]
+    preview = await og.branches.merge("sdk_dry", dry_run=True)
+    assert preview["dry_run"] is True and preview["commit"] is None
+    assert preview["outcome"] in ("fast_forward", "merged")
+    assert (await og.query(COUNT))["graph_commit_id"] == head
+    await og.branches.delete("sdk_dry")
+
+
+async def test_recorded_optimize_submit_wait_lookup_cancel(og: Omnigraph) -> None:
+    await og.mutate(INSERT_PERSON, params={"n": "opt", "c": None})
+    op_id = new_operation_id()
+    submitted = await og.operations.optimize(op_id, max_gate_hold_ms=30_000)
+    assert submitted["lookup"] == "found"
+    op = submitted.get("operation")
+    assert op is not None and op["operation_id"] == op_id
+    assert op["request"]["kind"] == "optimize"
+
+    # The same id and request answers the existing record, starting nothing.
+    again = await og.operations.optimize(op_id, max_gate_hold_ms=30_000)
+    again_op = again.get("operation")
+    assert again_op is not None and again_op["accepted_at"] == op["accepted_at"]
+
+    async with asyncio.timeout(120):
+        done = await og.operations.wait(op_id, interval=0.2)
+    final = done.get("operation")
+    assert final is not None and final["state"] == "succeeded", final
+    assert is_terminal(final["state"]) and done["in_progress"] is False
+    for table in final["outcome"].get("datasets", []):
+        assert table["outcome"] in ("optimized", "unchanged", "deferred", "failed")
+
+    # Cancelling a terminal operation leaves it unchanged.
+    cancelled = await og.operations.cancel(op_id)
+    cancelled_op = cancelled.get("operation")
+    assert cancelled_op is not None and cancelled_op["state"] == "succeeded"
+
+    # The same id with another request is refused, not run.
+    with pytest.raises(ConflictError) as info:
+        await og.operations.optimize(op_id, datasets=["node:Person"])
+    assert info.value.outcome_unknown is False
+
+
+async def test_unknown_operation_lookup(og: Omnigraph) -> None:
+    looked = await og.operations.get(new_operation_id())
+    assert looked["lookup"] == "unknown" and looked.get("operation") is None
+    waited = await og.operations.wait(new_operation_id(), interval=0)
+    assert waited["lookup"] == "unknown"
+
+
+async def test_non_canonical_operation_id_is_refused(og: Omnigraph) -> None:
+    with pytest.raises(BadRequestError) as info:
+        await og.operations.optimize("not-a-ulid")
+    assert info.value.outcome_unknown is False
