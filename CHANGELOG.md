@@ -3,6 +3,39 @@
 The package's major.minor follows the `omnigraph-server` release it is generated from; the
 patch number is the SDK's own. Every release so far speaks HTTP contract 0.14.
 
+## 0.16.0
+
+Generated from and tested against `omnigraph-server` 0.16.0, which still speaks HTTP contract
+0.14. The additions below need server 0.16.
+
+### Added
+
+- `og.operations` for recorded operations: `optimize(operation_id, datasets=...,
+  max_gate_hold_ms=...)`, `get`, `cancel`, and `wait`, which polls the lookup until the record
+  is terminal. `new_operation_id()` mints the canonical ULID to submit under; `is_terminal()`
+  and `TERMINAL_STATES` name the final states. `Operation`, `OperationResult`,
+  `OptimizeOutcome` and `TableOutcome` type the record.
+- `WriterFencedError`, a `ConflictError`, for the new `writer_fenced` code, with
+  `writer_fenced` (`current`, `held`, `read` epochs). A refused write is not `outcome_unknown`.
+- Types for the `maintain` access action and `WriterFencedOutput`.
+
+### Changed
+
+- A `branches.merge(dry_run=True)` whose answer is lost is no longer `outcome_unknown`: a dry
+  run is a read, as the 0.16 CLI now reports it. A reply that contradicts the dry run still is.
+
+### Server changes that affect callers
+
+- A graph with no applied policy refuses reads (`ForbiddenError`) unless the server sets
+  `OMNIGRAPH_ALLOW_READS_WITHOUT_POLICY=1`.
+- A request setting above the server's resource budget is refused with `BadRequestError`.
+- A conditional mutation that loses a race fails with `PreconditionFailedError`, not a `@card`
+  violation.
+- A Blob write on a recreated branch fails with `ConflictError.read_set_conflict`; an update,
+  delete or overwrite load overtaken by another commit reruns instead of failing.
+- Deployment routes answer a failed control-state read with 503 (retry) or 500, with
+  `effects: none`, instead of 409.
+
 ## 0.15.0
 
 Generated from and tested against `omnigraph-server` 0.15.0. Works with any server that

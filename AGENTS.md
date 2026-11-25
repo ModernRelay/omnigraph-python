@@ -14,7 +14,9 @@ for names and shapes.
   from the version: servers 0.14 to 0.16 all speak contract 0.14.
 - `src/omnigraph/_models.py` and `_version.py` are generated; never edit them by hand.
   `scripts/generate.py --check` must pass.
-- Public results are the generated `TypedDict`s; do not rename wire fields.
+- Public results are the generated `TypedDict`s; do not rename wire fields. Where the spec
+  leaves an object open (the recorded-operation record), `_operations.py` types it by hand
+  with the wire names.
 - Never add automatic retries. A lost write response is `outcome_unknown`, not a retry signal.
 - Runtime dependency: `httpx` only.
 - Checks: `uv run pytest`, `uv run mypy`, `uv run ruff check .`, `uv run ruff format --check .`;

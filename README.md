@@ -112,6 +112,32 @@ await og.queries.invoke("people", params={"name": "Ada"})
 Ordinary JSON requests are limited to 1 MiB by the server; bulk loads go through
 `load_ndjson`.
 
+## Recorded operations
+
+A cluster server started with `OMNIGRAPH_OPERATION_ROUTES=true` runs `optimize` on a graph's
+`main` while it serves, as a recorded operation tracked by an id the caller chose (server
+0.16+; every route needs the `maintain` action on `main`):
+
+```python
+from omnigraph import new_operation_id
+
+op_id = new_operation_id()  # keep it: after a lost response, look it up, never resubmit
+await og.operations.optimize(op_id, datasets=["node:Person"], max_gate_hold_ms=30_000)
+async with asyncio.timeout(600):
+    done = await og.operations.wait(op_id)
+state = done["operation"]["state"]  # terminal: is_terminal(state)
+await og.operations.cancel(op_id)
+```
+
+`get` and `wait` answer `lookup: "unknown"` for an id the record does not hold; that does not
+prove the operation never ran. `wait` polls only the lookup and lets any error end the wait.
+A succeeded run may still have deferred or failed datasets: read
+`operation["outcome"]["datasets"]`. The record's types (`Operation`, `OperationResult`) are
+written by hand from the server's record, which the OpenAPI document leaves open.
+
+A merge with `dry_run=True` is a read: a lost answer is not `outcome_unknown`, while a reply
+that contradicts the dry run is.
+
 ## Errors
 
 Every error is an `OmnigraphError` subclass chosen by status and `code` (`ConflictError`,
@@ -125,9 +151,13 @@ Every error is an `OmnigraphError` subclass chosen by status and `code` (`Confli
 A code's class refines its status's: `NotAdmittedError` is the `ForbiddenError` for an OIDC
 identity the server does not admit (signing in again will not help; the operator must admit
 it), and `GraphUnavailableError` is the `ServiceUnavailableError` for a graph that is not
-served. Error details are properties: `ConflictError.merge_conflicts`, `.key_conflict`,
+served. `WriterFencedError` is the `ConflictError` for a branch another process claimed
+(`writer_fenced` names the epochs; nothing was written). Error details are properties: `ConflictError.merge_conflicts`, `.key_conflict`,
 `.read_set_conflict`, `PreconditionFailedError.precondition_failure`,
 `PayloadTooLargeError.resource_limit`, `GoneError.change_feed_gap`, and so on.
+
+A graph with no applied policy refuses every action, reads included, with `ForbiddenError`
+(server 0.16; `OMNIGRAPH_ALLOW_READS_WITHOUT_POLICY=1` restores reads for static tokens).
 
 The token never appears in a `repr` or an error message.
 
