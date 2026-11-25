@@ -55,6 +55,16 @@ node Doc {
 edge WorksAt: Person -> Company {
   role: String?
 }
+
+node Spot {
+  slug: String @key
+  at: Vector(2)
+}
+
+node Counter {
+  name: String @key
+  n: U64
+}
 """
 POLICY = f"""\
 version: 1
@@ -304,3 +314,58 @@ async def test_blob_put_get_clear(og: Omnigraph) -> None:
     assert head.status_code == 200 and head.headers.get("ETag")
     cleared = await og.blobs.clear(**sel)
     assert cleared["commit"] is not None
+
+
+async def test_branch_list_detailed(og: Omnigraph) -> None:
+    await og.branches.create("sdk_detail")
+    await og.mutate(
+        INSERT_PERSON, params={"n": "detail", "c": None}, branch="sdk_detail"
+    )
+    listed = await og.branches.list_detailed()
+    assert "sdk_detail" in listed["branches"]
+    details = {d["name"]: d for d in listed["details"]}
+    assert [d["name"] for d in listed["details"]] == [
+        b for b in listed["branches"] if b in details
+    ]
+    branch = details["sdk_detail"]
+    assert branch.get("from") == "main" and branch.get("from_commit_id")
+    assert branch["head"]["graph_commit_id"] != branch.get("from_commit_id")
+    assert branch["updated_at"] >= (branch.get("created_at") or 0)
+    assert "from" not in details["main"] or details["main"].get("from") is None
+    await og.branches.delete("sdk_detail")
+
+
+async def test_ranked_read_reports_ranking(og: Omnigraph) -> None:
+    await og.mutate(
+        'query s() { insert Spot { slug: "near", at: [0.0, 0.0] } '
+        'insert Spot { slug: "far", at: [5.0, 5.0] } }'
+    )
+    read = await og.query(
+        "query n($v: Vector(2)) { match { $s: Spot } "
+        "return { $s.slug, nearest($s.at, $v) as dist } "
+        "order { nearest($s.at, $v) } limit 2 }",
+        params={"v": [0.1, 0.1]},
+    )
+    assert [r["s.slug"] for r in read["rows"]] == ["near", "far"]
+    ranking = read.get("ranking")
+    assert ranking is not None, read
+    assert ranking["by"] == "nearest" and ranking["order"] == "ascending"
+    assert ranking["score_columns"] == ["dist"]
+    assert ranking["exhaustive"] is True
+
+
+U64_MAX = 2**64 - 1
+
+
+@pytest.mark.parametrize("value", [U64_MAX, str(U64_MAX)], ids=["number", "string"])
+async def test_u64_parameter_above_i64_max_binds(og: Omnigraph, value: object) -> None:
+    name = f"max-{type(value).__name__}"
+    await og.mutate(
+        "query c($k: String, $n: U64) { insert Counter { name: $k, n: $n } }",
+        params={"k": name, "n": value},
+    )
+    read = await og.query(
+        "query r($n: U64) { match { $c: Counter { n: $n } } return { $c.name, $c.n } }",
+        params={"n": value},
+    )
+    assert {"c.name": name, "c.n": U64_MAX} in read["rows"], read["rows"]

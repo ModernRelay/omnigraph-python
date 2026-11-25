@@ -68,6 +68,30 @@ merged = await og.branches.merge("review", delete_branch=True)
 Merge and mutation receipts are validated; a receipt that does not name the requested
 operation raises `ApiContractError`.
 
+`og.branches.list_detailed()` adds `details` to the listing: for each branch the credential
+may read, its head commit, the branch and commit it started from, and when it was created and
+last moved (server 0.15+).
+
+## Ranked reads, settings, and parameters
+
+A read ordered by `nearest`, `bm25` or `rrf()` reports how it ranked its rows:
+
+```python
+read = await og.query(
+    "query near($v: Vector(2)) { match { $s: Spot } return { $s.slug, nearest($s.at, $v) as dist } "
+    "order { nearest($s.at, $v) } limit 10 }",
+    params={"v": [0.1, 0.2]},
+)
+read[
+    "ranking"
+]  # {"by": "nearest", "order": "ascending", "exhaustive": True, "score_columns": ["dist"]}
+```
+
+`query`, `mutate` and `branches.merge` take `settings`, the request's session settings (for
+example `{"change_lineage": "verify"}`). A resource budget above the server's ceiling is refused
+with `BadRequestError`. A `U64` parameter carries its whole range, up to `2**64 - 1`; Python
+integers are sent exactly.
+
 ## Streams, loads, feeds, and blobs
 
 ```python
@@ -96,6 +120,13 @@ Every error is an `OmnigraphError` subclass chosen by status and `code` (`Confli
 - `disposition`: the server's `effects` (`none`, `partial`, `unknown`) and next `action`;
 - `request_dispatched`: whether the request may have reached the server;
 - `outcome_unknown`: a write may have taken effect — reconcile before retrying.
+
+A code's class refines its status's: `NotAdmittedError` is the `ForbiddenError` for an OIDC
+identity the server does not admit (signing in again will not help; the operator must admit
+it), and `GraphUnavailableError` is the `ServiceUnavailableError` for a graph that is not
+served. Error details are properties: `ConflictError.merge_conflicts`, `.key_conflict`,
+`.read_set_conflict`, `PreconditionFailedError.precondition_failure`,
+`PayloadTooLargeError.resource_limit`, `GoneError.change_feed_gap`, and so on.
 
 The token never appears in a `repr` or an error message.
 
