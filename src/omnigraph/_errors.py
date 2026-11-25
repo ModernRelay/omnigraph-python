@@ -302,17 +302,32 @@ def error_body(parsed: Any) -> ErrorOutput | None:
     return cast(ErrorOutput, parsed)
 
 
+def server_outcome_unknown(parsed: Any) -> bool | None:
+    """Whether an error reply says a write may have taken effect, on any
+    route. Code `outcome_unknown` always does, whatever its disposition reads
+    (a recorded-operation lookup can leave a settlement write in doubt), and
+    a valid disposition otherwise decides. `None` when the reply says
+    neither, so the route decides."""
+    if isinstance(parsed, dict) and parsed.get("code") == "outcome_unknown":
+        return True
+    body = error_body(parsed)
+    return None if body is None else body["disposition"]["effects"] != "none"
+
+
 def from_response(
     response: httpx.Response,
-    body: ErrorOutput | None,
+    parsed: Any,
     *,
     method: str,
     url: str,
     may_write: bool,
 ) -> OmnigraphError:
+    """The error for a non-success reply. `parsed` is its JSON, if any;
+    `may_write` is the route's answer, used only when the reply does not say."""
+    body = error_body(parsed)
     code = body["code"] if body else None
     cls = error_class(response.status_code, code)
-    effects = body["disposition"]["effects"] if body else None
+    unknown = server_outcome_unknown(parsed)
     return cls(
         body["error"] if body else f"HTTP {response.status_code}",
         status=response.status_code,
@@ -323,5 +338,5 @@ def from_response(
         body=body,
         response=response,
         request_dispatched=True,
-        outcome_unknown=may_write and effects != "none",
+        outcome_unknown=may_write if unknown is None else unknown,
     )

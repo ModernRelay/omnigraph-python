@@ -198,8 +198,10 @@ async def test_refused_write_disposition_without_retries(
     assert len(rec.data_requests) == 1
 
 
-async def test_a_read_error_is_never_outcome_unknown() -> None:
-    rec = Recorder(lambda r: _error(400, "bad_request", "unknown"))
+async def test_a_read_refusal_the_server_calls_certain_is_not_outcome_unknown() -> None:
+    # A read is uncertain only when the server says so (see
+    # test_a_read_keeps_the_servers_word_on_uncertainty).
+    rec = Recorder(lambda r: _error(400, "bad_request", "none"))
     async with _client(rec) as og:
         with pytest.raises(omnigraph.BadRequestError) as info:
             await og.query("query q() { match { $a: A } return { $a.k } }")
@@ -394,3 +396,41 @@ async def test_error_details_are_exposed(
         with pytest.raises(cls) as info:
             await og.schema.get()
     assert getattr(info.value, accessor) == detail
+
+
+@pytest.mark.parametrize(
+    ("body", "status", "unknown"),
+    [
+        # code outcome_unknown wins over any disposition it carries
+        ({"error": "resolution write in doubt", "code": "outcome_unknown",
+          "disposition": {"effects": "none", "action": "reconcile"}}, 500, True),
+        ({"error": "in doubt", "code": "outcome_unknown"}, 500, True),
+        ({"error": "in doubt", "code": "internal",
+          "disposition": {"effects": "unknown", "action": "reconcile"}}, 500, True),
+        ({"error": "half", "code": "conflict",
+          "disposition": {"effects": "partial", "action": "refresh"}}, 409, True),
+        ({"error": "retry", "code": "service_unavailable",
+          "disposition": {"effects": "none", "action": "retry"}}, 503, False),
+        ("gateway timeout", 500, False),
+    ],
+)  # fmt: skip
+async def test_a_read_keeps_the_servers_word_on_uncertainty(
+    body: Any, status: int, unknown: bool
+) -> None:
+    rec = Recorder(lambda r: _json(status, body))
+    async with _client(rec) as og:
+        with pytest.raises(omnigraph.OmnigraphError) as info:
+            await og.snapshot()
+    assert info.value.status == status
+    assert info.value.outcome_unknown is unknown
+    assert len(rec.data_requests) == 1
+
+
+async def test_a_write_without_a_valid_body_stays_uncertain() -> None:
+    rec = Recorder(
+        lambda r: httpx.Response(502, content=b"bad gateway", headers=CONTRACT)
+    )
+    async with _client(rec) as og:
+        with pytest.raises(omnigraph.OmnigraphError) as info:
+            await og.mutate('query q() { insert A { k: "x" } }')
+    assert info.value.outcome_unknown is True

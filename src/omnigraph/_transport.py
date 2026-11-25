@@ -19,7 +19,6 @@ from ._errors import (
     ConfigurationError,
     NetworkError,
     OmnigraphError,
-    error_body,
     from_response,
 )
 from ._version import HTTP_API_CONTRACT, HTTP_API_CONTRACT_HEADER
@@ -264,7 +263,7 @@ class Transport:
                     parsed = None
                 raise from_response(
                     response,
-                    error_body(parsed),
+                    parsed,
                     method=method,
                     url=url,
                     may_write=writes,

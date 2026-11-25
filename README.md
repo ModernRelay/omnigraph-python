@@ -119,7 +119,8 @@ Every error is an `OmnigraphError` subclass chosen by status and `code` (`Confli
 
 - `disposition`: the server's `effects` (`none`, `partial`, `unknown`) and next `action`;
 - `request_dispatched`: whether the request may have reached the server;
-- `outcome_unknown`: a write may have taken effect — reconcile before retrying.
+- `outcome_unknown`: a write may have taken effect — reconcile before retrying. The server's
+  word decides on any route, reads included; only a reply without one falls back to the route.
 
 A code's class refines its status's: `NotAdmittedError` is the `ForbiddenError` for an OIDC
 identity the server does not admit (signing in again will not help; the operator must admit

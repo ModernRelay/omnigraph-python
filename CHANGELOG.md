@@ -13,6 +13,9 @@ speaks HTTP contract 0.14; the additions below need server 0.15.
 - The `Omnigraph-Http-Api` header is read from the server's OpenAPI document instead of being
   derived from the server's minor version. Server 0.15 still speaks contract 0.14, so deriving
   it would have sent `0.15` and failed every request with `api_contract_mismatch`.
+- An error reply that says a write may have taken effect sets `outcome_unknown` on every
+  route, reads included: code `outcome_unknown` always (whatever its disposition reads), and
+  otherwise effects `unknown` or `partial`. Before, a GET could never be `outcome_unknown`.
 
 ### Added
 
