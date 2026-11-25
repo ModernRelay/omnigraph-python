@@ -26,12 +26,23 @@ from ._errors import (
     UnsupportedMediaTypeError,
     WriterFencedError,
 )
+from ._operations import (
+    TERMINAL_STATES,
+    Operation,
+    OperationResult,
+    OperationState,
+    OptimizeOutcome,
+    TableOutcome,
+    is_terminal,
+    new_operation_id,
+)
 from ._version import HTTP_API_CONTRACT, HTTP_API_CONTRACT_HEADER, SERVER_VERSION
 
 __all__ = [
     "HTTP_API_CONTRACT",
     "HTTP_API_CONTRACT_HEADER",
     "SERVER_VERSION",
+    "TERMINAL_STATES",
     "ApiContractError",
     "BadRequestError",
     "ConfigurationError",
@@ -47,13 +58,20 @@ __all__ = [
     "NotFoundError",
     "Omnigraph",
     "OmnigraphError",
+    "Operation",
+    "OperationResult",
+    "OperationState",
+    "OptimizeOutcome",
     "PayloadTooLargeError",
     "PreconditionFailedError",
     "RangeNotSatisfiableError",
     "RequestTimeoutError",
     "ServiceUnavailableError",
+    "TableOutcome",
     "TooManyRequestsError",
     "UnauthorizedError",
     "UnsupportedMediaTypeError",
     "WriterFencedError",
+    "is_terminal",
+    "new_operation_id",
 ]

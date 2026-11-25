@@ -21,6 +21,7 @@ from ._models import (
     SettingsRequest,
     SnapshotOutput,
 )
+from ._operations import Operations
 from ._receipts import valid_mutation_receipt
 from ._resources import (
     Blobs,
@@ -102,6 +103,7 @@ class Omnigraph:
         self.queries = Queries(transport)
         self.changes = Changes(transport)
         self.blobs = Blobs(transport)
+        self.operations = Operations(transport)
 
     @property
     def base_url(self) -> str:
