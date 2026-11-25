@@ -33,11 +33,16 @@ never retries.
 
 ## Versions
 
-The package's major.minor is the HTTP contract it speaks: `omnigraph` 0.14.x talks to
-`omnigraph-server` 0.14.x and refuses any other contract. The patch number is the SDK's own,
-for fixes that change nothing on the wire, so `omnigraph` 0.14.1 does not mean server 0.14.1.
-Upgrade the server and this package together when the minor changes, and pin
-`omnigraph>=0.14,<0.15` to follow SDK fixes for one contract.
+The package's major.minor is the `omnigraph-server` release it is generated from and tested
+against: `omnigraph` 0.14.x is built from server 0.14. The patch number is the SDK's own, for
+fixes that change nothing on the wire, so `omnigraph` 0.14.1 does not mean server 0.14.1.
+`SERVER_VERSION` names the exact server release.
+
+The HTTP contract is a separate, slower-moving number: `HTTP_API_CONTRACT` is read from the
+pinned server's OpenAPI document, and the client refuses a server that speaks another one.
+Server releases that keep the wire contract keep its value, so a newer server on the same
+contract accepts this client; routes and fields added in a later release need that release.
+Pin `omnigraph>=0.14,<0.15` to follow SDK fixes for one server minor.
 
 ## Write and verify
 
