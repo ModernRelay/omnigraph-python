@@ -135,6 +135,11 @@ async def test_graph_scoped_call_without_graph_id_is_refused_before_sending() ->
         (413, "payload_too_large", PayloadTooLargeError),
         (503, "graph_unavailable", GraphUnavailableError),
         (400, "api_contract_mismatch", ApiContractError),
+        (403, "forbidden", omnigraph.ForbiddenError),
+        (403, "not_admitted", omnigraph.NotAdmittedError),
+        # A code's class never overrides a status it does not refine.
+        (409, "not_admitted", ConflictError),
+        (418, "not_admitted", omnigraph.NotAdmittedError),
     ],
 )
 async def test_errors_map_to_classes(
@@ -170,6 +175,27 @@ async def test_write_outcome_follows_effects(effects: str, unknown: bool) -> Non
         with pytest.raises(omnigraph.BadRequestError) as info:
             await og.mutate('query a() { insert A { k: "x" } }')
     assert info.value.outcome_unknown is unknown
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "effects", "unknown"),
+    [
+        (403, "not_admitted", "none", False),
+        (403, "forbidden", "none", False),
+        (500, "outcome_unknown", "unknown", True),
+        (503, "service_unavailable", "none", False),
+    ],
+)
+async def test_refused_write_disposition_without_retries(
+    status: int, code: str, effects: str, unknown: bool
+) -> None:
+    rec = Recorder(lambda r: _error(status, code, effects))
+    async with _client(rec) as og:
+        with pytest.raises(omnigraph.OmnigraphError) as info:
+            await og.mutate('query a() { insert A { k: "x" } }')
+    assert info.value.code == code
+    assert info.value.outcome_unknown is unknown
+    assert len(rec.data_requests) == 1
 
 
 async def test_a_read_error_is_never_outcome_unknown() -> None:

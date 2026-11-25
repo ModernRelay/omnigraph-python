@@ -90,6 +90,12 @@ class ForbiddenError(OmnigraphError):
     pass
 
 
+class NotAdmittedError(ForbiddenError):
+    """The OIDC token is valid, but the server admits no principal for its
+    subject (`not_admitted`). Signing in again cannot help; the server's
+    operator must admit the identity."""
+
+
 class NotFoundError(OmnigraphError):
     pass
 
@@ -196,6 +202,7 @@ _BY_CODE: dict[str, type[OmnigraphError]] = {
     "graph_unavailable": GraphUnavailableError,
     "unauthorized": UnauthorizedError,
     "forbidden": ForbiddenError,
+    "not_admitted": NotAdmittedError,
     "not_found": NotFoundError,
     "method_not_allowed": MethodNotAllowedError,
     "conflict": ConflictError,
@@ -217,6 +224,22 @@ _BY_CODE: dict[str, type[OmnigraphError]] = {
     "deadline_exceeded": BadRequestError,
     "result_too_large": PayloadTooLargeError,
 }
+
+
+def error_class(status: int, code: str | None) -> type[OmnigraphError]:
+    """The status picks the class; a code's class replaces it when it refines
+    it (a subclass, such as `GraphUnavailableError` for a 503 or
+    `NotAdmittedError` for a 403). A code alone decides only when the status
+    has no class of its own."""
+    if code == "api_contract_mismatch":
+        return ApiContractError
+    by_status = _BY_STATUS.get(status)
+    by_code = _BY_CODE.get(code) if code else None
+    if by_status is None:
+        return by_code or InternalServerError
+    if by_code is not None and issubclass(by_code, by_status):
+        return by_code
+    return by_status
 
 
 def error_body(parsed: Any) -> ErrorOutput | None:
@@ -244,16 +267,7 @@ def from_response(
     may_write: bool,
 ) -> OmnigraphError:
     code = body["code"] if body else None
-    if code == "graph_unavailable":
-        cls: type[OmnigraphError] = GraphUnavailableError
-    elif code == "api_contract_mismatch":
-        cls = ApiContractError
-    else:
-        cls = (
-            _BY_STATUS.get(response.status_code)
-            or (_BY_CODE.get(code) if code else None)
-            or InternalServerError
-        )
+    cls = error_class(response.status_code, code)
     effects = body["disposition"]["effects"] if body else None
     return cls(
         body["error"] if body else f"HTTP {response.status_code}",
